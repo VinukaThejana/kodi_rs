@@ -1,0 +1,11 @@
+# systemd user unit for go2rtc (v1.9.14, from github.com/AlexxIT/go2rtc releases).
+# Install: ~/.config/systemd/user/go2rtc.service
+[Unit]
+Description=go2rtc (Kodi audio stream for the web remote)
+
+[Service]
+ExecStart=%h/.local/bin/go2rtc -config %h/.config/go2rtc/go2rtc.yaml
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

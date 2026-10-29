@@ -1,0 +1,33 @@
+{% if !online %}
+<div class="empty">
+  <svg><use href="#i-power"/></svg>
+  <p>Kodi is off</p>
+  <span>Turn it on from the remote to browse your movies.</span>
+</div>
+{% else if movies.is_empty() %}
+<div class="empty">
+  <svg><use href="#i-film"/></svg>
+  <p>No movies yet</p>
+  <span>Movies you add to Kodi's library show up here.</span>
+</div>
+{% else %}
+<ul class="grid">
+  {% for m in movies %}
+  <li>
+    <button class="card" hx-post="movies/{{ m.id }}/play" data-play="{{ m.title }}">
+      <span class="poster">
+        {% if let Some(src) = m.poster %}
+        <img src="{{ src }}" alt="" loading="lazy" decoding="async">
+        {% else %}
+        <span class="poster-empty">{{ m.title }}</span>
+        {% endif %}
+        {% if let Some(p) = m.progress %}<span class="resume" style="--progress: {{ p }}%"></span>{% endif %}
+        <span class="poster-play"><svg><use href="#i-play"/></svg></span>
+      </span>
+      <span class="card-title">{{ m.title }}</span>
+      <span class="card-year">{{ m.year }}</span>
+    </button>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}

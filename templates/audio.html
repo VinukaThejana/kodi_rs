@@ -1,0 +1,62 @@
+{% if playing %}
+<section class="group">
+  <h3>Audio Track</h3>
+  {% if tracks.is_empty() %}
+  <p class="group-empty">This video has no selectable audio tracks.</p>
+  {% else %}
+  <div class="list">
+    {% for t in tracks %}
+    <button class="row" hx-post="audio/track" hx-target="#audio-body" name="index" value="{{ t.value }}" aria-pressed="{{ t.selected }}">
+      <span class="row-text"><span class="row-title">{{ t.title }}</span>{% if !t.detail.is_empty() %}<span class="row-detail">{{ t.detail }}</span>{% endif %}</span>
+      <svg class="row-check"><use href="#i-check"/></svg>
+    </button>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+
+<section class="group">
+  <h3>Subtitles</h3>
+  <div class="list">
+    <button class="row" hx-post="audio/subtitle" hx-target="#audio-body" name="index" value="off" aria-pressed="{{ subtitles_off }}">
+      <span class="row-text"><span class="row-title">Off</span></span>
+      <svg class="row-check"><use href="#i-check"/></svg>
+    </button>
+    {% for s in subtitles %}
+    <button class="row" hx-post="audio/subtitle" hx-target="#audio-body" name="index" value="{{ s.value }}" aria-pressed="{{ s.selected }}">
+      <span class="row-text"><span class="row-title">{{ s.title }}</span>{% if !s.detail.is_empty() %}<span class="row-detail">{{ s.detail }}</span>{% endif %}</span>
+      <svg class="row-check"><use href="#i-check"/></svg>
+    </button>
+    {% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="group">
+  <h3>Sound Output</h3>
+  <div class="list">
+    {% if can_listen %}
+    {#- data-listen: app.js opens the WebRTC stream in the same tap, which browsers require to start audio. -#}
+    <button class="row" hx-post="listen/start" hx-target="#audio-body" data-listen aria-pressed="{{ listening }}">
+      <span class="row-text"><span class="row-title">This device</span><span class="row-detail">Plays wherever this remote is open</span></span>
+      <svg class="row-check"><use href="#i-check"/></svg>
+    </button>
+    {% if listening %}
+    <div class="row sync-row">
+      <span class="row-text"><span class="row-title">Sync</span><span class="row-detail">{{ sync_label }}</span></span>
+      <div class="stepper" hx-sync="this:queue all">
+        <button hx-post="listen/sync" hx-target="#audio-body" name="step" value="1" aria-label="Play the sound earlier">Earlier</button>
+        <button hx-post="listen/sync" hx-target="#audio-body" name="step" value="-1" aria-label="Play the sound later">Later</button>
+      </div>
+    </div>
+    {% endif %}
+    {% endif %}
+    {% for o in outputs %}
+    <button class="row" hx-post="audio/output" hx-target="#audio-body" name="value" value="{{ o.value }}" aria-pressed="{{ o.selected }}">
+      <span class="row-text"><span class="row-title">{{ o.title }}</span>{% if !o.detail.is_empty() %}<span class="row-detail">{{ o.detail }}</span>{% endif %}</span>
+      <svg class="row-check"><use href="#i-check"/></svg>
+    </button>
+    {% endfor %}
+  </div>
+  {% if !playing %}<p class="group-note">Audio and subtitle tracks appear here while something is playing.</p>{% endif %}
+</section>

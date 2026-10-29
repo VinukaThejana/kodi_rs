@@ -1,0 +1,45 @@
+<div class="show">
+  <button class="back-link" hx-get="shows" hx-target="#media"><svg><use href="#i-back"/></svg>TV Shows</button>
+
+  <section class="show-hero">
+    {% if let Some(src) = backdrop %}<img class="show-backdrop" src="{{ src }}" alt="">{% endif %}
+    <div class="show-hero-body">
+      {% if let Some(src) = poster %}<img class="show-poster" src="{{ src }}" alt="">{% endif %}
+      <div class="show-info">
+        <h2>{{ title }}</h2>
+        {% if !detail.is_empty() %}<p>{{ detail }}</p>{% endif %}
+        {% if let Some(n) = next %}
+        <button class="play-button" hx-post="episodes/{{ n.id }}/play" data-play="{{ n.toast }}">
+          <svg><use href="#i-play"/></svg>{{ n.label }}
+        </button>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  {% for season in seasons %}
+  <section class="season">
+    <h3>{{ season.name }}</h3>
+    <ul class="episodes">
+      {% for e in season.episodes %}
+      <li>
+        <button class="episode" hx-post="episodes/{{ e.id }}/play" data-play="{{ e.toast }}">
+          <span class="episode-thumb">
+            {% if let Some(src) = e.thumb %}<img src="{{ src }}" alt="" loading="lazy" decoding="async">{% endif %}
+            {% if let Some(p) = e.progress %}<span class="resume" style="--progress: {{ p }}%"></span>{% endif %}
+            <span class="poster-play"><svg><use href="#i-play"/></svg></span>
+          </span>
+          <span class="episode-text">
+            <span class="episode-title">{{ e.number }}. {{ e.title }}</span>
+            {% if !e.meta.is_empty() %}<span class="episode-meta">{{ e.meta }}</span>{% endif %}
+          </span>
+          {% if e.watched %}<svg class="episode-watched" aria-label="Watched"><use href="#i-check"/></svg>{% endif %}
+        </button>
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% else %}
+  <div class="empty"><p>No episodes</p><span>Kodi hasn't found episodes for this show yet.</span></div>
+  {% endfor %}
+</div>

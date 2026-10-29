@@ -1,0 +1,32 @@
+{% if !online %}
+<div class="empty">
+  <svg><use href="#i-power"/></svg>
+  <p>Kodi is off</p>
+  <span>Turn it on from the remote to browse your TV shows.</span>
+</div>
+{% else if shows.is_empty() %}
+<div class="empty">
+  <svg><use href="#i-tv"/></svg>
+  <p>No TV shows yet</p>
+  <span>Shows you add to Kodi's library show up here.</span>
+</div>
+{% else %}
+<ul class="grid">
+  {% for s in shows %}
+  <li>
+    <button class="card" hx-get="shows/{{ s.id }}" hx-target="#media">
+      <span class="poster">
+        {% if let Some(src) = s.poster %}
+        <img src="{{ src }}" alt="" loading="lazy" decoding="async">
+        {% else %}
+        <span class="poster-empty">{{ s.title }}</span>
+        {% endif %}
+        {% if s.unwatched > 0 %}<span class="badge" aria-label="{{ s.unwatched }} unwatched">{{ s.unwatched }}</span>{% endif %}
+      </span>
+      <span class="card-title">{{ s.title }}</span>
+      <span class="card-year">{{ s.year }}</span>
+    </button>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}

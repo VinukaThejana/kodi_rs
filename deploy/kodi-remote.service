@@ -1,0 +1,18 @@
+# systemd user unit. Install:
+#   cargo build --release
+#   install -Dm755 target/release/kodi-remote ~/.local/bin/kodi-remote
+#   install -Dm600 /dev/null ~/.config/kodi-remote/env && echo 'KODI_PASSWORD=…' > ~/.config/kodi-remote/env
+#   install -Dm644 deploy/kodi-remote.service ~/.config/systemd/user/kodi-remote.service
+#   systemctl --user enable --now kodi-remote
+# Runs as a user unit so "Turn On" can start Kodi via `systemd-run --user`.
+
+[Unit]
+Description=Kodi web remote
+
+[Service]
+EnvironmentFile=%h/.config/kodi-remote/env
+ExecStart=%h/.local/bin/kodi-remote
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

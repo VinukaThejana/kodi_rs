@@ -1,0 +1,17 @@
+# Streams Kodi's audio (the kodi_remote sink's monitor) to browsers over WebRTC.
+# Install: ~/.config/go2rtc/go2rtc.yaml
+api:
+  listen: "127.0.0.1:1984"   # only the remote server calls the API
+rtsp:
+  listen: "127.0.0.1:8554"   # ffmpeg publishes here
+srtp:
+  listen: ""                 # HomeKit; unused
+webrtc:
+  listen: ":8555"            # media to browsers on the LAN
+streams:
+  # Started on demand when a browser connects, stopped when the last one leaves.
+  # asetpts re-stamps audio by sample count: the pulse input stamps it with the wall clock,
+  # which wobbles RTP timestamps by ±1 sample and makes Safari conceal a gap at each one.
+  kodi: "exec:ffmpeg -hide_banner -loglevel error -f pulse -fragment_size 960 -i kodi_remote.monitor -af asetpts=N/SR/TB -ac 2 -ar 48000 -c:a libopus -b:a 160k -application lowdelay -frame_duration 10 -rtsp_transport tcp -f rtsp {output}"
+log:
+  level: info

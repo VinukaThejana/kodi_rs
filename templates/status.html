@@ -1,0 +1,92 @@
+<section id="status" class="status" data-state="{{ status.state() }}" data-muted="{{ status.muted }}"
+         data-backdrop="{% if let Some(now) = status.now %}{% if let Some(src) = now.backdrop %}{{ src }}{% endif %}{% endif %}"
+         {%- if let Some(now) = status.now %}
+         data-title="{{ now.title }}" data-artist="{{ now.subtitle }}"
+         data-artwork="{% if let Some(src) = now.poster %}{{ src }}{% endif %}"
+         data-position="{{ now.position }}" data-duration="{{ now.duration }}"
+         {%- endif %}
+         hx-get="status" hx-trigger="every 2s [!document.hidden], refresh from:body, visibilitychange from:document"
+         hx-swap="morph:outerHTML">
+
+  <header class="status-head">
+    <div class="status-label">
+      <div>
+        <h1 class="status-device">Kodi</h1>
+        <p class="status-title"><span class="led"></span>
+          {%- match status.state() -%}
+            {%- when "off" -%}Off
+            {%- when "unreachable" -%}Not responding
+            {%- when "idle" -%}Ready
+            {%- when "paused" -%}Paused
+            {%- when _ -%}Playing
+          {%- endmatch -%}
+        </p>
+      </div>
+    </div>
+    <div class="head-actions">
+      {% if status.online %}
+      {#- hx-swap must be explicit: #status's morph:outerHTML is inherited and would replace #audio-body itself. -#}
+      <button class="chip" hx-get="audio" hx-target="#audio-body" hx-swap="innerHTML" data-open="audio-sheet" aria-label="Audio settings">
+        <svg><use href="#i-waveform"/></svg>
+      </button>
+      <button class="chip chip-power" data-open="power-sheet" aria-label="Turn off Kodi">
+        <svg><use href="#i-power"/></svg>
+      </button>
+      {% endif %}
+    </div>
+  </header>
+
+  {% if status.unreachable %}
+  <div class="idle unreachable">
+    <p>Kodi is running on the TV, but its remote control isn't reachable.</p>
+    <p class="unreachable-fix">On the TV, go to Settings → Services → Control and switch
+      “Allow remote control via HTTP” off and on — or quit and reopen Kodi.</p>
+  </div>
+  {% else if !status.online %}
+  <div class="off-card">
+    <button class="launch" hx-post="kodi/launch" hx-disabled-elt="this">
+      <span class="launch-ring"><svg><use href="#i-power"/></svg></span>
+      <span class="when-idle">Turn On</span><span class="when-busy">Starting Kodi…</span>
+    </button>
+    <p class="off-hint">Kodi opens on the TV in a few seconds.</p>
+  </div>
+  {% else %}{% if let Some(now) = status.now %}
+  <article class="now">
+    {% if let Some(src) = now.poster %}<img class="now-tint" src="{{ src }}" alt="">{% endif %}
+    <div class="now-top">
+      {% if let Some(src) = now.poster %}
+      <img class="now-art" src="{{ src }}" alt="">
+      {% else %}
+      <span class="now-art now-art-empty"><svg><use href="#i-film"/></svg></span>
+      {% endif %}
+      <div class="now-meta">
+        <h2>{{ now.title }}</h2>
+        {% if !now.subtitle.is_empty() %}<p>{{ now.subtitle }}</p>{% endif %}
+      </div>
+      <button class="now-stop" hx-post="player/stop" aria-label="Stop"><svg><use href="#i-stop"/></svg></button>
+    </div>
+
+    <div class="scrub" id="scrub" role="slider" aria-label="Playback position"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{ now.percent }}" style="--progress: {{ now.percent }}%">
+      <span class="scrub-track"><span class="scrub-fill"></span></span>
+    </div>
+
+    <div class="now-controls">
+      <span class="time">{{ now.elapsed }}</span>
+      <div class="transport" hx-sync="this:queue all">
+        <button hx-post="player/skip" hx-vals='{"seconds": -10}' aria-label="Back 10 seconds"><svg><use href="#i-back10"/></svg></button>
+        <button class="transport-main" hx-post="player/play-pause" aria-label="{% if now.paused %}Play{% else %}Pause{% endif %}">
+          <svg><use href="{% if now.paused %}#i-play{% else %}#i-pause{% endif %}"/></svg>
+        </button>
+        <button hx-post="player/skip" hx-vals='{"seconds": 30}' aria-label="Forward 30 seconds"><svg><use href="#i-fwd30"/></svg></button>
+      </div>
+      <span class="time time-end">{{ now.remaining }}</span>
+    </div>
+  </article>
+  {% else %}
+  <div class="idle">
+    <p>Nothing playing</p>
+    <button class="link" data-view-link="library">Browse movies</button>
+  </div>
+  {% endif %}{% endif %}
+</section>
