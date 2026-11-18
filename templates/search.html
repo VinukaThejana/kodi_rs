@@ -1,0 +1,46 @@
+{% if !online %}
+<div class="empty">
+  <svg><use href="#i-power"/></svg>
+  <p>Kodi is off</p>
+  <span>Turn it on from the remote to search.</span>
+</div>
+{% else %}
+{#- The start of the add-on page trail (data-addon-home), so Back from a show returns here. -#}
+<div class="addon" data-addon-url="{{ url }}" data-addon-home>
+  <form class="search-bar" role="search" hx-get="search" hx-target="#media" hx-indicator="#media">
+    <svg><use href="#i-search"/></svg>
+    <input name="q" type="search" value="{{ query }}" placeholder="Movies and TV shows" aria-label="Search movies and TV shows"
+           enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false"{% if query.is_empty() %} autofocus{% endif %}>
+  </form>
+
+  {% if query.is_empty() %}
+  <p class="search-note">Plays from Netflix when it has the title, otherwise from Apple TV.</p>
+  {% else %}
+    {% if !movies.is_empty() %}
+    <h2 class="addon-title">Movies</h2>
+    <ul class="grid grid-wide">
+      {% for t in movies %}
+      {% include "title-card.html" %}
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if !shows.is_empty() %}
+    <h2 class="addon-title">TV Shows</h2>
+    <ul class="grid grid-wide">
+      {% for t in shows %}
+      {% include "title-card.html" %}
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if movies.is_empty() && shows.is_empty() %}
+    <div class="empty">
+      <svg><use href="#i-search"/></svg>
+      <p>No results</p>
+      <span>Nothing on TMDb matches “{{ query }}”.</span>
+    </div>
+    {% endif %}
+  {% endif %}
+</div>
+{% endif %}

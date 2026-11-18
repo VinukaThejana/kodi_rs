@@ -262,6 +262,9 @@ pub struct DirEntry {
     /// `movie`, `tvshow`, `episode`, …; `unknown` for menus, categories and seasons.
     #[serde(default, rename = "type")]
     pub kind: String,
+    /// The bare title; `label` may carry numbering such as "1x01." or "S2E1 ·".
+    #[serde(default)]
+    pub title: String,
     #[serde(default)]
     pub year: Option<u32>,
     #[serde(default)]

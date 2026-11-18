@@ -21,8 +21,8 @@ use crate::{
     kodi::{self, Kodi, KodiError, NavKey, Subtitle, Volume, VolumeStep},
     listen::{self, Listen, ListenError},
     views::{
-        AddonPage, AudioSheet, Choice, IndexPage, MovieCard, MoviesFragment, Service, ShowCard, ShowPage,
-        ShowsFragment, Status, StatusFragment,
+        AddonPage, AudioSheet, Choice, IndexPage, MovieCard, MoviesFragment, SearchPage, Service, ShowCard, ShowPage,
+        ShowsFragment, Status, StatusFragment, tmdb_search_path,
     },
 };
 
@@ -46,6 +46,7 @@ pub fn router(state: AppState) -> Router {
         .route("/episodes/{id}/play", post(play_episode))
         .route("/addon/{service}", get(addon))
         .route("/addon/{service}/play", post(play_addon))
+        .route("/search", get(search))
         .route("/input/text", post(send_text))
         .route("/input/{key}", post(nav))
         .route("/player/play-pause", post(play_pause))
@@ -211,6 +212,28 @@ async fn addon(
     let page = match kodi.directory(&path).await {
         Ok(entries) => AddonPage::new(service, &path, title, home, entries),
         Err(KodiError::Offline) => AddonPage::offline(service),
+        Err(e) => return Err(e.into()),
+    };
+    render(page)
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: Option<String>,
+}
+
+/// The Search segment: the bare field, or TMDb's movies and shows matching `q`, both
+/// searched at once.
+async fn search(State(kodi): State<Kodi>, Query(q): Query<SearchQuery>) -> Result<Html<String>> {
+    let query = q.q.map(|q| q.trim().to_owned()).filter(|q| !q.is_empty());
+    let Some(query) = query else {
+        return render(SearchPage::blank(kodi.is_online().await));
+    };
+    let (movies_path, shows_path) = (tmdb_search_path("movie", &query), tmdb_search_path("tv", &query));
+    let results = tokio::try_join!(kodi.directory(&movies_path), kodi.directory(&shows_path));
+    let page = match results {
+        Ok((movies, shows)) => SearchPage::new(query, movies, shows),
+        Err(KodiError::Offline) => SearchPage::blank(false),
         Err(e) => return Err(e.into()),
     };
     render(page)

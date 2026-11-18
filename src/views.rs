@@ -48,12 +48,15 @@ pub struct ShowPage {
     pub seasons: Vec<Season>,
 }
 
-/// An add-on the remote browses through Kodi, using the add-on's own menus.
+/// An add-on the remote browses through Kodi, using the add-on's own menus. `Search` is
+/// TMDb Helper, entered only through [`SearchPage`] results: it plays a title from Netflix
+/// if Netflix has it, otherwise from Apple TV (its player files in Kodi's userdata).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Service {
     Netflix,
     AppleTv,
+    Search,
 }
 
 impl Service {
@@ -61,6 +64,7 @@ impl Service {
         match self {
             Self::Netflix => "Netflix",
             Self::AppleTv => "Apple TV",
+            Self::Search => "Search",
         }
     }
 
@@ -69,22 +73,26 @@ impl Service {
         match self {
             Self::Netflix => "netflix",
             Self::AppleTv => "appletv",
+            Self::Search => "search",
         }
     }
 
-    /// Where Back goes once the page trail is empty: the add-on's home.
+    /// Where Back goes once the page trail is empty: the add-on's home, or the search page.
     pub fn root(self) -> &'static str {
         match self {
             Self::Netflix => "addon/netflix",
             Self::AppleTv => "addon/appletv",
+            Self::Search => "search",
         }
     }
 
-    /// The add-on's top menu (for Netflix, the active profile's home).
+    /// The add-on's top menu (for Netflix, the active profile's home). The remote never links
+    /// to TMDb Helper's own menu, but it is the safe default for a bare `addon/search`.
     pub fn home(self) -> &'static str {
         match self {
             Self::Netflix => "plugin://plugin.video.netflix/directory/home/",
             Self::AppleTv => "plugin://plugin.video.appletv/",
+            Self::Search => TMDB_HELPER,
         }
     }
 
@@ -94,6 +102,7 @@ impl Service {
         let prefix = match self {
             Self::Netflix => "plugin://plugin.video.netflix/",
             Self::AppleTv => "plugin://plugin.video.appletv/",
+            Self::Search => TMDB_HELPER,
         };
         path.starts_with(prefix)
     }
@@ -103,12 +112,33 @@ impl Service {
         match self {
             Self::Netflix => &["/directory/search/", "/directory/exported/", "/directory/profiles/"],
             Self::AppleTv => &["action=search", "action=sign_out"],
+            Self::Search => &[],
         }
     }
 
     fn url(self, path: &str, title: &str) -> String {
         format!("addon/{}?path={}&title={}", self.slug(), percent_encode(path), percent_encode(title))
     }
+}
+
+const TMDB_HELPER: &str = "plugin://plugin.video.themoviedb.helper/";
+
+/// TMDb Helper's search listing for `query`; `kind` is `movie` or `tv`.
+pub fn tmdb_search_path(kind: &str, query: &str) -> String {
+    format!("{TMDB_HELPER}?info=search&tmdb_type={kind}&query={}", percent_encode(query))
+}
+
+/// The library's Search segment: a search field and, once searched, TMDb's matching movies
+/// and shows. Its `data-addon-url` makes it the start of the page trail, so Back from a
+/// show's seasons returns to these results.
+#[derive(Template)]
+#[template(path = "search.html")]
+pub struct SearchPage {
+    pub online: bool,
+    pub query: String,
+    pub url: String,
+    pub movies: Vec<AddonItem>,
+    pub shows: Vec<AddonItem>,
 }
 
 /// One page of a streaming add-on, read through Kodi. Its entries are split by how they
@@ -431,6 +461,28 @@ impl AddonPage {
     }
 }
 
+impl SearchPage {
+    /// The field alone, before anything is searched (or while Kodi is off).
+    pub fn blank(online: bool) -> Self {
+        Self { online, query: String::new(), url: "search".into(), movies: vec![], shows: vec![] }
+    }
+
+    /// Results of [`tmdb_search_path`] for movies and for shows. TMDb Helper appends a
+    /// "Next page" folder to each; the first page (20 of each) is plenty from a remote.
+    pub fn new(query: String, movies: Vec<DirEntry>, shows: Vec<DirEntry>) -> Self {
+        let keep = |entries: Vec<DirEntry>, kind: &str| -> Vec<AddonItem> {
+            entries.into_iter().filter(|e| e.kind == kind).map(|e| AddonItem::new(Service::Search, e)).collect()
+        };
+        Self {
+            online: true,
+            url: format!("search?q={}", percent_encode(&query)),
+            query,
+            movies: keep(movies, "movie"),
+            shows: keep(shows, "tvshow"),
+        }
+    }
+}
+
 impl AddonItem {
     fn new(service: Service, e: DirEntry) -> Self {
         let plays = e.filetype == FileType::File;
@@ -448,7 +500,9 @@ impl AddonItem {
             art: ["landscape", "thumb", "poster"].iter().find_map(|k| e.art.get(*k)).map(|src| art_url(src)),
             progress: resume_percent(e.resume.as_ref()),
             title: match e.episode {
-                Some(n) if e.kind == "episode" => format!("{n}. {}", e.label),
+                Some(n) if e.kind == "episode" => {
+                    format!("{n}. {}", if e.title.is_empty() { &e.label } else { &e.title })
+                }
                 _ => e.label,
             },
             detail,
@@ -691,5 +745,41 @@ mod tests {
         assert!(page.folders[0].href.starts_with("addon/appletv?path="));
         assert!(!Service::AppleTv.owns("plugin://plugin.video.netflix/directory/home/"));
         assert!(!Service::Netflix.owns("/home/user/Movies/"));
+    }
+
+    #[test]
+    fn search_keeps_only_titles_and_plays_them_through_tmdb_helper() {
+        let movies = serde_json::from_value(json!([
+            { "label": "The Break-Up", "file": "plugin://plugin.video.themoviedb.helper/?info=play&tmdb_type=movie&tmdb_id=9767", "filetype": "file", "type": "movie", "year": 2006 },
+            { "label": "Next page", "file": "plugin://plugin.video.themoviedb.helper/?info=search&tmdb_type=movie&query=break&page=2", "filetype": "directory", "type": "unknown" },
+        ]))
+        .unwrap();
+        let shows = serde_json::from_value(json!([
+            { "label": "Severance", "file": "plugin://plugin.video.themoviedb.helper/?info=seasons&tmdb_type=tv&tmdb_id=95396", "filetype": "directory", "type": "tvshow" },
+        ]))
+        .unwrap();
+        let page = SearchPage::new("break up".into(), movies, shows);
+
+        assert_eq!(page.url, "search?q=break%20up");
+        assert_eq!(titles(&page.movies), ["The Break-Up"]);
+        assert!(
+            page.movies[0].plays
+                && page.movies[0]
+                    .href
+                    .starts_with("addon/search/play?path=plugin%3A%2F%2Fplugin.video.themoviedb.helper")
+        );
+        assert_eq!(titles(&page.shows), ["Severance"]);
+        assert!(page.shows[0].href.starts_with("addon/search?path="));
+    }
+
+    #[test]
+    fn episodes_are_numbered_once() {
+        let entries = serde_json::from_value(json!([
+            { "label": "1x01. Good News About Hell", "title": "Good News About Hell", "file": "plugin://plugin.video.themoviedb.helper/?info=play&tmdb_type=tv&tmdb_id=95396&season=1&episode=1", "filetype": "file", "type": "episode", "episode": 1 },
+        ]))
+        .unwrap();
+        let page = AddonPage::new(Service::Search, Service::Search.home(), "Season 1".into(), false, entries);
+
+        assert_eq!(titles(&page.episodes), ["1. Good News About Hell"]);
     }
 }

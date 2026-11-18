@@ -126,6 +126,8 @@
 
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey || document.querySelector("dialog[open]")) return;
+    // Typing in a field (the library search) is text, not remote control.
+    if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]")) return;
     if ((e.key === "Enter" || e.key === " ") && e.target.closest("button")) return;
     if (document.querySelector('.status:is([data-state="off"], [data-state="unreachable"])')) return;
     const path = KEYS[e.key];
@@ -175,19 +177,48 @@
 
   // ── Tabs, sheets ────────────────────────────────────────────────
 
+  // Phones show one view at a time: the remote, the library or search. Library and search
+  // share the #media pane (so Back from a show found by search still works), and
+  // `app.dataset.pane` says which of the two it holds. Laptops show the remote beside the
+  // pane, so their tab bar only switches the pane.
+
+  const VIEWS = ["remote", "library", "search"];
+  const wide = matchMedia("(min-width: 900px)");
+
+  /** Fills #media for the current pane: search, or the selected library segment. */
+  function loadPane() {
+    const segment = app.dataset.pane === "library" ? document.querySelector(".segmented [aria-selected='true']") : null;
+    htmx.ajax("GET", segment?.getAttribute("hx-get") ?? "search", {
+      source: segment ?? document.getElementById("media"),
+      target: "#media",
+    });
+  }
+
   function setView(view) {
     app.dataset.view = view;
+    if (view !== "remote" && view !== app.dataset.pane) {
+      app.dataset.pane = view;
+      loadPane();
+    }
+    const shown = view === "remote" && wide.matches ? app.dataset.pane : view;
     for (const tab of document.querySelectorAll(".tabbar [data-view]")) {
-      tab.setAttribute("aria-pressed", String(tab.dataset.view === view));
+      tab.setAttribute("aria-pressed", String(tab.dataset.view === shown));
     }
     try { localStorage.setItem("view", view); } catch {}
   }
 
+  let initialView = "remote";
   try {
     const saved = localStorage.getItem("view");
-    if (saved === "remote" || saved === "library") setView(saved);
+    if (VIEWS.includes(saved)) initialView = saved;
   } catch {}
-  if (location.hash === "#library" || location.hash === "#remote") setView(location.hash.slice(1));
+  if (VIEWS.includes(location.hash.slice(1))) initialView = location.hash.slice(1);
+  app.dataset.pane = initialView === "search" ? "search" : "library";
+  setView(initialView);
+  document.addEventListener("DOMContentLoaded", loadPane, { once: true });
+  wide.addEventListener("change", () => setView(app.dataset.view));
+  // Kodi was just switched on: reload the pane so it stops saying "Kodi is off".
+  document.body.addEventListener("launched", loadPane);
 
   document.addEventListener("click", (e) => {
     const tab = e.target.closest(".tabbar [data-view]");

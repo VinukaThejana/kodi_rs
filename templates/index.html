@@ -40,12 +40,13 @@
     <symbol id="i-stop" viewBox="0 0 24 24"><rect fill="currentColor" x="5.5" y="5.5" width="13" height="13" rx="3"/></symbol>
     <symbol id="i-waveform" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M3.5 10.8v2.4M7.25 8v8M11 4.5v15M14.75 7.5v9M18.5 10v4"/></symbol>
     <symbol id="i-keyboard" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5.5" width="19" height="13" rx="2.8"/><path d="M8.5 15.2h7"/></g><g fill="currentColor"><circle cx="7" cy="9.3" r="1.05"/><circle cx="10.33" cy="9.3" r="1.05"/><circle cx="13.67" cy="9.3" r="1.05"/><circle cx="17" cy="9.3" r="1.05"/><circle cx="7" cy="12.2" r="1.05"/><circle cx="10.33" cy="12.2" r="1.05"/><circle cx="13.67" cy="12.2" r="1.05"/><circle cx="17" cy="12.2" r="1.05"/></g></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="10.5" cy="10.5" r="6.3"/><path d="m15.3 15.3 4.9 4.9"/></g></symbol>
     <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="m5.6 12.6 4.1 4.1 8.7-9.3"/></symbol>
     <symbol id="i-remote" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M10.6 1.8h2.8a3.6 3.6 0 0 1 3.6 3.6v13.2a3.6 3.6 0 0 1-3.6 3.6h-2.8A3.6 3.6 0 0 1 7 18.6V5.4a3.6 3.6 0 0 1 3.6-3.6zM12 4.4a3.2 3.2 0 1 0 0 6.4 3.2 3.2 0 0 0 0-6.4zm0 8.2a1.15 1.15 0 1 0 0 2.3 1.15 1.15 0 0 0 0-2.3zm0 3.6a1.15 1.15 0 1 0 0 2.3 1.15 1.15 0 0 0 0-2.3z"/></symbol>
     <symbol id="i-film" viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M6 3.5h12A3 3 0 0 1 21 6.5v11a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3v-11a3 3 0 0 1 3-3zm-.9 3v1.9H7V6.5zm0 4.55v1.9H7v-1.9zm0 4.55v1.9H7v-1.9zM17 6.5v1.9h1.9V6.5zm0 4.55v1.9h1.9v-1.9zm0 4.55v1.9h1.9v-1.9zM9.3 6.5a.8.8 0 0 0-.8.8v9.4a.8.8 0 0 0 .8.8h5.4a.8.8 0 0 0 .8-.8V7.3a.8.8 0 0 0-.8-.8z"/></symbol>
   </svg>
 
-  <div class="app" data-view="remote">
+  <div class="app" data-view="remote" data-pane="library">
     <aside class="device">
       {% include "status.html" %}
 
@@ -74,20 +75,17 @@
 
     <main class="library">
       <header class="library-head">
-        <h1>Library</h1>
-        {#- The selected tab also reloads when Kodi is switched on, so the grid stops saying "Kodi is off". -#}
+        {#- Library and Search share the #media pane; data-pane on .app says which one it holds,
+            and app.js reloads it when Kodi is switched on, so it stops saying "Kodi is off". -#}
+        <h1><span class="pane-library">Library</span><span class="pane-search">Search</span></h1>
         <div class="segmented" role="tablist" aria-label="Library section">
-          <button role="tab" aria-selected="true" data-segment hx-get="movies" hx-target="#media"
-                  hx-trigger="click, launched[this.getAttribute('aria-selected') === 'true'] from:body">Movies</button>
-          <button role="tab" aria-selected="false" data-segment hx-get="shows" hx-target="#media"
-                  hx-trigger="click, launched[this.getAttribute('aria-selected') === 'true'] from:body">TV Shows</button>
-          <button role="tab" aria-selected="false" data-segment hx-get="addon/netflix" hx-target="#media" hx-indicator="#media"
-                  hx-trigger="click, launched[this.getAttribute('aria-selected') === 'true'] from:body">Netflix</button>
-          <button role="tab" aria-selected="false" data-segment hx-get="addon/appletv" hx-target="#media" hx-indicator="#media"
-                  hx-trigger="click, launched[this.getAttribute('aria-selected') === 'true'] from:body">Apple TV</button>
+          <button role="tab" aria-selected="true" data-segment hx-get="movies" hx-target="#media">Movies</button>
+          <button role="tab" aria-selected="false" data-segment hx-get="shows" hx-target="#media">TV Shows</button>
+          <button role="tab" aria-selected="false" data-segment hx-get="addon/netflix" hx-target="#media" hx-indicator="#media">Netflix</button>
+          <button role="tab" aria-selected="false" data-segment hx-get="addon/appletv" hx-target="#media" hx-indicator="#media">Apple TV</button>
         </div>
       </header>
-      <div id="media" hx-get="movies" hx-trigger="load">
+      <div id="media">
         <ul class="grid" aria-hidden="true">
           <li class="skeleton"></li><li class="skeleton"></li><li class="skeleton"></li>
           <li class="skeleton"></li><li class="skeleton"></li><li class="skeleton"></li>
@@ -99,6 +97,7 @@
   <nav class="tabbar" aria-label="Views">
     <button data-view="remote" aria-pressed="true"><svg><use href="#i-remote"/></svg><span>Remote</span></button>
     <button data-view="library" aria-pressed="false"><svg><use href="#i-film"/></svg><span>Library</span></button>
+    <button data-view="search" aria-pressed="false"><svg><use href="#i-search"/></svg><span>Search</span></button>
   </nav>
 
   <dialog id="audio-sheet" class="sheet" aria-labelledby="audio-title">
