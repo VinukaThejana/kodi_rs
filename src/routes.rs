@@ -21,8 +21,8 @@ use crate::{
     kodi::{self, Kodi, KodiError, NavKey, Subtitle, Volume, VolumeStep},
     listen::{self, Listen, ListenError},
     views::{
-        AudioSheet, Choice, IndexPage, MovieCard, MoviesFragment, ShowCard, ShowPage, ShowsFragment, Status,
-        StatusFragment,
+        AddonPage, AudioSheet, Choice, IndexPage, MovieCard, MoviesFragment, Service, ShowCard, ShowPage,
+        ShowsFragment, Status, StatusFragment,
     },
 };
 
@@ -44,6 +44,8 @@ pub fn router(state: AppState) -> Router {
         .route("/shows", get(shows))
         .route("/shows/{id}", get(show))
         .route("/episodes/{id}/play", post(play_episode))
+        .route("/addon/{service}", get(addon))
+        .route("/addon/{service}/play", post(play_addon))
         .route("/input/text", post(send_text))
         .route("/input/{key}", post(nav))
         .route("/player/play-pause", post(play_pause))
@@ -95,6 +97,8 @@ pub enum AppError {
     Listen(ListenError),
     #[error(transparent)]
     Bluetooth(#[from] BluetoothError),
+    #[error("not a path in the {0} add-on")]
+    ForeignPath(&'static str),
 }
 
 impl From<ListenError> for AppError {
@@ -110,8 +114,9 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match &self {
             Self::Kodi(KodiError::Offline) | Self::Listen(_) => StatusCode::SERVICE_UNAVAILABLE,
-            Self::Bluetooth(BluetoothError::NotPaired) => StatusCode::BAD_REQUEST,
+            Self::Bluetooth(BluetoothError::NotPaired) | Self::ForeignPath(_) => StatusCode::BAD_REQUEST,
             Self::Bluetooth(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Kodi(KodiError::Slow) => StatusCode::GATEWAY_TIMEOUT,
             Self::Kodi(_) => StatusCode::BAD_GATEWAY,
             Self::Render(_) | Self::Launch(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -180,6 +185,48 @@ async fn show(State(kodi): State<Kodi>, Path(id): Path<i64>) -> Result<Html<Stri
 
 async fn play_episode(State(kodi): State<Kodi>, Path(id): Path<i64>) -> Result<impl IntoResponse> {
     kodi.play_episode(id).await?;
+    Ok(refreshed())
+}
+
+#[derive(Deserialize)]
+struct AddonQuery {
+    path: Option<String>,
+    title: Option<String>,
+}
+
+/// `path` if it is inside `service`'s add-on, so these routes can't reach other files on Kodi.
+fn owned(service: Service, path: String) -> Result<String> {
+    if service.owns(&path) { Ok(path) } else { Err(AppError::ForeignPath(service.name())) }
+}
+
+/// One folder of a streaming add-on; its home menu when no path is given.
+async fn addon(
+    State(kodi): State<Kodi>,
+    Path(service): Path<Service>,
+    Query(q): Query<AddonQuery>,
+) -> Result<Html<String>> {
+    let path = owned(service, q.path.unwrap_or_else(|| service.home().to_owned()))?;
+    let home = path == service.home();
+    let title = q.title.filter(|_| !home).unwrap_or_else(|| service.name().to_owned());
+    let page = match kodi.directory(&path).await {
+        Ok(entries) => AddonPage::new(service, &path, title, home, entries),
+        Err(KodiError::Offline) => AddonPage::offline(service),
+        Err(e) => return Err(e.into()),
+    };
+    render(page)
+}
+
+#[derive(Deserialize)]
+struct PlayQuery {
+    path: String,
+}
+
+async fn play_addon(
+    State(kodi): State<Kodi>,
+    Path(service): Path<Service>,
+    Query(q): Query<PlayQuery>,
+) -> Result<impl IntoResponse> {
+    kodi.play_file(&owned(service, q.path)?).await?;
     Ok(refreshed())
 }
 

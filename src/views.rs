@@ -5,8 +5,8 @@ use askama::Template;
 use crate::bluetooth::Headphones;
 use crate::listen;
 use crate::kodi::{
-    self, AudioOutputs, AudioStream, Episode, Kodi, KodiError, Movie, Playback, Resume, SubtitleStream, TvShow,
-    percent_encode,
+    self, AudioOutputs, AudioStream, DirEntry, Episode, FileType, Kodi, KodiError, Movie, Playback, Resume,
+    SubtitleStream, TvShow, percent_encode,
 };
 
 #[derive(Template)]
@@ -46,6 +46,97 @@ pub struct ShowPage {
     pub backdrop: Option<String>,
     pub next: Option<NextUp>,
     pub seasons: Vec<Season>,
+}
+
+/// An add-on the remote browses through Kodi, using the add-on's own menus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Service {
+    Netflix,
+    AppleTv,
+}
+
+impl Service {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Netflix => "Netflix",
+            Self::AppleTv => "Apple TV",
+        }
+    }
+
+    /// The `/addon/{slug}` URL segment; matches the serde name.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Netflix => "netflix",
+            Self::AppleTv => "appletv",
+        }
+    }
+
+    /// Where Back goes once the page trail is empty: the add-on's home.
+    pub fn root(self) -> &'static str {
+        match self {
+            Self::Netflix => "addon/netflix",
+            Self::AppleTv => "addon/appletv",
+        }
+    }
+
+    /// The add-on's top menu (for Netflix, the active profile's home).
+    pub fn home(self) -> &'static str {
+        match self {
+            Self::Netflix => "plugin://plugin.video.netflix/directory/home/",
+            Self::AppleTv => "plugin://plugin.video.appletv/",
+        }
+    }
+
+    /// Whether `path` is inside this add-on. Routes refuse anything else, so they can't be
+    /// used to browse or play arbitrary files on the Kodi box.
+    pub fn owns(self, path: &str) -> bool {
+        let prefix = match self {
+            Self::Netflix => "plugin://plugin.video.netflix/",
+            Self::AppleTv => "plugin://plugin.video.appletv/",
+        };
+        path.starts_with(prefix)
+    }
+
+    /// Entries that need the TV (search types on its keyboard, sign-in) or don't apply here.
+    fn hidden(self) -> &'static [&'static str] {
+        match self {
+            Self::Netflix => &["/directory/search/", "/directory/exported/", "/directory/profiles/"],
+            Self::AppleTv => &["action=search", "action=sign_out"],
+        }
+    }
+
+    fn url(self, path: &str, title: &str) -> String {
+        format!("addon/{}?path={}&title={}", self.slug(), percent_encode(path), percent_encode(title))
+    }
+}
+
+/// One page of a streaming add-on, read through Kodi. Its entries are split by how they
+/// render: titles as landscape cards, episodes as rows, and every other folder (menus,
+/// categories, seasons, "Next page") as a plain list.
+#[derive(Template)]
+#[template(path = "addon.html")]
+pub struct AddonPage {
+    pub service: Service,
+    pub online: bool,
+    pub title: String,
+    /// This page's own URL, which the client keeps so Back can return here.
+    pub url: String,
+    pub home: bool,
+    pub titles: Vec<AddonItem>,
+    pub episodes: Vec<AddonItem>,
+    pub folders: Vec<AddonItem>,
+}
+
+pub struct AddonItem {
+    pub title: String,
+    /// Year for titles, running time for episodes.
+    pub detail: String,
+    pub art: Option<String>,
+    pub progress: Option<String>,
+    /// Playable items post to this URL; folders load it into the library pane.
+    pub href: String,
+    pub plays: bool,
 }
 
 #[derive(Template)]
@@ -297,6 +388,75 @@ impl EpisodeRow {
     }
 }
 
+impl AddonPage {
+    /// `path` is the add-on folder these `entries` were listed from.
+    pub fn new(service: Service, path: &str, title: String, home: bool, entries: Vec<DirEntry>) -> Self {
+        let mut page = Self {
+            url: service.url(path, &title),
+            service,
+            online: true,
+            title,
+            home,
+            titles: vec![],
+            episodes: vec![],
+            folders: vec![],
+        };
+        let hidden = service.hidden();
+        for e in entries.into_iter().filter(|e| !hidden.iter().any(|h| e.file.contains(h))) {
+            let list = match (e.filetype, e.kind.as_str()) {
+                (FileType::File, "episode") => &mut page.episodes,
+                (FileType::File, _) | (FileType::Directory, "tvshow") => &mut page.titles,
+                (FileType::Directory, _) => &mut page.folders,
+            };
+            list.push(AddonItem::new(service, e));
+        }
+        page
+    }
+
+    pub fn offline(service: Service) -> Self {
+        Self {
+            service,
+            online: false,
+            title: String::new(),
+            url: String::new(),
+            home: true,
+            titles: vec![],
+            episodes: vec![],
+            folders: vec![],
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.titles.is_empty() && self.episodes.is_empty() && self.folders.is_empty()
+    }
+}
+
+impl AddonItem {
+    fn new(service: Service, e: DirEntry) -> Self {
+        let plays = e.filetype == FileType::File;
+        let detail = match (e.kind.as_str(), &e.resume) {
+            ("episode", Some(r)) if r.total >= 60.0 => format!("{} min", (r.total / 60.0).round()),
+            ("episode", _) => String::new(),
+            _ => year(e.year),
+        };
+        Self {
+            href: if plays {
+                format!("addon/{}/play?path={}", service.slug(), percent_encode(&e.file))
+            } else {
+                service.url(&e.file, &e.label)
+            },
+            art: ["landscape", "thumb", "poster"].iter().find_map(|k| e.art.get(*k)).map(|src| art_url(src)),
+            progress: resume_percent(e.resume.as_ref()),
+            title: match e.episode {
+                Some(n) if e.kind == "episode" => format!("{n}. {}", e.label),
+                _ => e.label,
+            },
+            detail,
+            plays,
+        }
+    }
+}
+
 /// Watched fraction as a CSS percentage, for items that were started but not finished.
 fn resume_percent(resume: Option<&Resume>) -> Option<String> {
     resume
@@ -476,4 +636,60 @@ fn art_url(src: &str) -> String {
 fn clock(secs: u64) -> String {
     let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// Entries shaped like the Netflix add-on's `Files.GetDirectory` output.
+    fn entries() -> Vec<DirEntry> {
+        serde_json::from_value(json!([
+            { "label": "My List", "file": "plugin://plugin.video.netflix/directory/video_list_sorted/myList/queue/", "filetype": "directory", "type": "unknown" },
+            { "label": "Search", "file": "plugin://plugin.video.netflix/directory/search/search/", "filetype": "directory", "type": "unknown" },
+            { "label": "Some Show", "file": "plugin://plugin.video.netflix/directory/show/1/", "filetype": "directory", "type": "tvshow", "year": 2019 },
+            { "label": "Some Movie", "file": "plugin://plugin.video.netflix/play/movie/2/", "filetype": "file", "type": "movie",
+              "resume": { "position": 30.0, "total": 120.0 } },
+            { "label": "Pilot", "file": "plugin://plugin.video.netflix/play/show/1/season/3/episode/4/", "filetype": "file", "type": "episode",
+              "episode": 1, "resume": { "position": 0.0, "total": 3141.0 } },
+        ]))
+        .unwrap()
+    }
+
+    fn titles(items: &[AddonItem]) -> Vec<&str> {
+        items.iter().map(|i| i.title.as_str()).collect()
+    }
+
+    #[test]
+    fn addon_page_sorts_entries_by_how_they_render() {
+        let page = AddonPage::new(Service::Netflix, Service::Netflix.home(), "Netflix".into(), true, entries());
+
+        assert_eq!(titles(&page.folders), ["My List"], "search is hidden");
+        assert_eq!(titles(&page.titles), ["Some Show", "Some Movie"]);
+        assert_eq!(titles(&page.episodes), ["1. Pilot"]);
+
+        let (show, movie, episode) = (&page.titles[0], &page.titles[1], &page.episodes[0]);
+        assert!(!show.plays && show.href.starts_with("addon/netflix?path="));
+        assert!(movie.plays && movie.href.starts_with("addon/netflix/play?path="));
+        assert_eq!(movie.progress.as_deref(), Some("25.0"));
+        assert_eq!(episode.detail, "52 min");
+    }
+
+    #[test]
+    fn apple_tv_hides_entries_that_need_the_tv_and_owns_only_its_paths() {
+        let entries = serde_json::from_value(json!([
+            { "label": "Featured", "file": "plugin://plugin.video.appletv/?action=featured", "filetype": "directory", "type": "unknown" },
+            { "label": "Search", "file": "plugin://plugin.video.appletv/?action=search", "filetype": "directory", "type": "unknown" },
+            { "label": "Sign out", "file": "plugin://plugin.video.appletv/?action=sign_out", "filetype": "directory", "type": "unknown" },
+        ]))
+        .unwrap();
+        let page = AddonPage::new(Service::AppleTv, Service::AppleTv.home(), "Apple TV".into(), true, entries);
+
+        assert_eq!(titles(&page.folders), ["Featured"]);
+        assert!(page.folders[0].href.starts_with("addon/appletv?path="));
+        assert!(!Service::AppleTv.owns("plugin://plugin.video.netflix/directory/home/"));
+        assert!(!Service::Netflix.owns("/home/user/Movies/"));
+    }
 }

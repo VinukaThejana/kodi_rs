@@ -235,6 +235,32 @@
     if (el.matches("[data-close-after]")) el.closest("dialog")?.close();
   });
 
+  // ── Streaming add-ons (Netflix, Apple TV) ────────────────────────
+  // Add-on folders have no parent link, so remember the pages passed on the way in. Each
+  // add-on page swapped into the pane pushes the one it replaced; Back pops instead.
+  // Reaching an add-on's home, or leaving the add-ons, starts a fresh trail.
+
+  const addonTrail = [];
+  let addonShown = null; // URL of the add-on page in the pane, if one is
+  let goingBack = false;
+
+  document.body.addEventListener("htmx:afterSwap", (e) => {
+    if (e.detail.target.id !== "media") return;
+    const page = e.detail.target.querySelector("[data-addon-url]");
+    if (!page || page.hasAttribute("data-addon-home")) addonTrail.length = 0;
+    else if (!goingBack && addonShown) addonTrail.push(addonShown);
+    addonShown = page?.dataset.addonUrl ?? null;
+    goingBack = false;
+  });
+
+  document.addEventListener("click", (e) => {
+    const back = e.target.closest("[data-addon-back]");
+    if (!back) return;
+    goingBack = true;
+    htmx.ajax("GET", addonTrail.pop() ?? back.dataset.addonBack, { source: back, target: "#media" })
+      .finally(() => { goingBack = false; });
+  });
+
   // ── Volume HUD + toasts ─────────────────────────────────────────
 
   let hudTimer;

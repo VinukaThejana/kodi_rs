@@ -81,6 +81,10 @@
                   hx-trigger="click, launched[this.getAttribute('aria-selected') === 'true'] from:body">Movies</button>
           <button role="tab" aria-selected="false" data-segment hx-get="shows" hx-target="#media"
                   hx-trigger="click, launched[this.getAttribute('aria-selected') === 'true'] from:body">TV Shows</button>
+          <button role="tab" aria-selected="false" data-segment hx-get="addon/netflix" hx-target="#media" hx-indicator="#media"
+                  hx-trigger="click, launched[this.getAttribute('aria-selected') === 'true'] from:body">Netflix</button>
+          <button role="tab" aria-selected="false" data-segment hx-get="addon/appletv" hx-target="#media" hx-indicator="#media"
+                  hx-trigger="click, launched[this.getAttribute('aria-selected') === 'true'] from:body">Apple TV</button>
         </div>
       </header>
       <div id="media" hx-get="movies" hx-trigger="load">

@@ -625,7 +625,8 @@ svg { width: 24px; height: 24px; display: block; flex: none; }
 }
 .segmented button {
   flex: 1;
-  padding: 7px 18px;
+  padding: 7px 8px;
+  white-space: nowrap;
   border-radius: 8px;
   font-size: 14px;
   font-weight: 600;
@@ -774,6 +775,41 @@ svg { width: 24px; height: 24px; display: block; flex: none; }
 }
 .empty svg { width: 44px; height: 44px; color: var(--label-3); }
 .empty p { margin: 10px 0 0; font-size: 20px; font-weight: 600; color: var(--label); }
+
+/* ── Streaming add-ons (Netflix, Apple TV) ── */
+
+/* Add-on pages take seconds to load; dim the pane meanwhile so the tap visibly registered. */
+#media.htmx-request { opacity: 0.55; transition: opacity 0.2s; }
+
+.addon-title { margin: 0 0 16px; font-size: 22px; font-weight: 700; letter-spacing: -0.015em; }
+
+/* Add-on titles use landscape artwork (Netflix sends nothing else). */
+.grid.grid-wide { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.poster-wide { aspect-ratio: 16 / 9; }
+
+.folders { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.grid + .folders, .episodes + .folders { margin-top: 26px; }
+.folder {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 14px 14px 16px;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  text-align: left;
+  background: var(--elev);
+  transition: background 0.15s;
+}
+.folder svg { flex: none; width: 18px; height: 18px; color: var(--label-3); transform: rotate(180deg); }
+.folder:active { background: var(--fill); }
+
+@media (min-width: 900px) {
+  .grid.grid-wide { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+  .folders { grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 8px 14px; }
+}
 
 /* ── Floating tab bar (phone) ── */
 
