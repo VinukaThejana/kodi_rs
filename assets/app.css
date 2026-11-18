@@ -928,6 +928,25 @@ dialog.sheet[open]::backdrop { background: rgba(0, 0, 0, 0.5); }
 }
 .stepper button:active { transform: scale(0.95); background: rgba(255, 255, 255, 0.22); }
 
+/* Type text */
+
+.text-field {
+  box-sizing: border-box;
+  width: 100%;
+  height: 52px;
+  margin-top: 14px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 14px;
+  font: inherit;
+  font-size: 17px; /* 16px or more, or iOS zooms the page on focus */
+  color: var(--label);
+  background: var(--fill);
+  outline: none;
+  transition: box-shadow 0.15s;
+}
+.text-field:focus { box-shadow: inset 0 0 0 2px var(--blue); }
+
 /* Power confirmation */
 
 .sheet-alert { padding: 28px 20px calc(var(--safe-b) + 16px); text-align: center; }

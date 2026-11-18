@@ -217,6 +217,9 @@
     }
   });
 
+  // The text sheet starts empty each time, however it was closed.
+  document.getElementById("text-sheet").addEventListener("close", (e) => e.target.querySelector("form").reset());
+
   // Opening a show, going back, or switching Movies/TV Shows starts at the top.
   document.body.addEventListener("htmx:afterSwap", (e) => {
     if (e.detail.target.id === "media") window.scrollTo({ top: 0 });

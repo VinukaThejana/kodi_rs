@@ -44,6 +44,7 @@ pub fn router(state: AppState) -> Router {
         .route("/shows", get(shows))
         .route("/shows/{id}", get(show))
         .route("/episodes/{id}/play", post(play_episode))
+        .route("/input/text", post(send_text))
         .route("/input/{key}", post(nav))
         .route("/player/play-pause", post(play_pause))
         .route("/player/stop", post(stop))
@@ -185,6 +186,19 @@ async fn play_episode(State(kodi): State<Kodi>, Path(id): Path<i64>) -> Result<i
 async fn nav(State(kodi): State<Kodi>, Path(key): Path<NavKey>) -> Result<impl IntoResponse> {
     kodi.nav(key).await?;
     Ok(refreshed())
+}
+
+#[derive(Deserialize)]
+struct TextForm {
+    text: String,
+    done: bool,
+}
+
+/// Sent on every keystroke (`done=false`, mirrored live on the TV) and once on submit.
+/// Plain `204`: typing doesn't change playback, so there's no need to re-poll the status card.
+async fn send_text(State(kodi): State<Kodi>, Form(f): Form<TextForm>) -> Result<StatusCode> {
+    kodi.send_text(&f.text, f.done).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn play_pause(State(kodi): State<Kodi>) -> Result<impl IntoResponse> {

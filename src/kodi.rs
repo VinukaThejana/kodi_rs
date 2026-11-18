@@ -354,6 +354,12 @@ impl Kodi {
         self.send(key.method(), json!({})).await
     }
 
+    /// Replaces the text in Kodi's on-screen keyboard (or focused text field) with `text`.
+    /// `done` confirms it, as if Enter were pressed on the TV; otherwise the keyboard stays open.
+    pub async fn send_text(&self, text: &str, done: bool) -> Result<()> {
+        self.send("Input.SendText", json!({ "text": text, "done": done })).await
+    }
+
     pub async fn play_pause(&self) -> Result<()> {
         let id = self.require_player().await?;
         self.send("Player.PlayPause", json!({ "playerid": id })).await
