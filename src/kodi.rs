@@ -556,6 +556,12 @@ impl Kodi {
             .map(drop)
     }
 
+    /// Runs an add-on with `params` (e.g. `/play/?…`) and returns at once, like Kodi's
+    /// `RunAddon`. The add-on drives the player itself, so its errors show on the TV.
+    pub async fn run_addon(&self, addon: &str, params: &str) -> Result<()> {
+        self.send("Addons.ExecuteAddon", json!({ "addonid": addon, "params": params })).await
+    }
+
     pub async fn set_audio_stream(&self, index: i64) -> Result<()> {
         let id = self.require_player().await?;
         self.send("Player.SetAudioStream", json!({ "playerid": id, "stream": index })).await

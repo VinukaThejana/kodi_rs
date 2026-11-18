@@ -19,6 +19,7 @@ use tokio::process::Command;
 use crate::{
     bluetooth::{Address, Bluetooth, BluetoothError},
     kodi::{self, Kodi, KodiError, NavKey, Subtitle, Volume, VolumeStep},
+    link::{Link, Start},
     listen::{self, Listen, ListenError},
     views::{
         AddonPage, AudioSheet, Choice, IndexPage, MovieCard, MoviesFragment, SearchPage, Service, ShowCard, ShowPage,
@@ -47,6 +48,7 @@ pub fn router(state: AppState) -> Router {
         .route("/addon/{service}", get(addon))
         .route("/addon/{service}/play", post(play_addon))
         .route("/search", get(search))
+        .route("/link", post(play_link))
         .route("/input/text", post(send_text))
         .route("/input/{key}", post(nav))
         .route("/player/play-pause", post(play_pause))
@@ -100,6 +102,8 @@ pub enum AppError {
     Bluetooth(#[from] BluetoothError),
     #[error("not a path in the {0} add-on")]
     ForeignPath(&'static str),
+    #[error("That isn't a YouTube link or a direct video link")]
+    NotPlayable,
 }
 
 impl From<ListenError> for AppError {
@@ -115,7 +119,9 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match &self {
             Self::Kodi(KodiError::Offline) | Self::Listen(_) => StatusCode::SERVICE_UNAVAILABLE,
-            Self::Bluetooth(BluetoothError::NotPaired) | Self::ForeignPath(_) => StatusCode::BAD_REQUEST,
+            Self::Bluetooth(BluetoothError::NotPaired) | Self::ForeignPath(_) | Self::NotPlayable => {
+                StatusCode::BAD_REQUEST
+            }
             Self::Bluetooth(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Kodi(KodiError::Slow) => StatusCode::GATEWAY_TIMEOUT,
             Self::Kodi(_) => StatusCode::BAD_GATEWAY,
@@ -251,6 +257,23 @@ async fn play_addon(
 ) -> Result<impl IntoResponse> {
     kodi.play_file(&owned(service, q.path)?).await?;
     Ok(refreshed())
+}
+
+#[derive(Deserialize)]
+struct LinkForm {
+    url: String,
+}
+
+/// Plays a shared link: from the search bar (htmx) or the iPhone's "Play on Kodi" shortcut,
+/// which posts the shared text as `url`. The `played` event tells the page what started.
+async fn play_link(State(kodi): State<Kodi>, Form(f): Form<LinkForm>) -> Result<impl IntoResponse> {
+    let link = Link::find(&f.url).ok_or(AppError::NotPlayable)?;
+    match link.start() {
+        Start::Open(path) => kodi.play_file(&path).await?,
+        Start::RunAddon { addon, params } => kodi.run_addon(addon, &params).await?,
+    }
+    let trigger = json!({ "refresh": null, "played": link.label() });
+    Ok((StatusCode::NO_CONTENT, [("HX-Trigger", trigger.to_string())]))
 }
 
 async fn nav(State(kodi): State<Kodi>, Path(key): Path<NavKey>) -> Result<impl IntoResponse> {

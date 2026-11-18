@@ -9,12 +9,12 @@
 <div class="addon" data-addon-url="{{ url }}" data-addon-home>
   <form class="search-bar" role="search" hx-get="search" hx-target="#media" hx-indicator="#media">
     <svg><use href="#i-search"/></svg>
-    <input name="q" type="search" value="{{ query }}" placeholder="Movies and TV shows" aria-label="Search movies and TV shows"
+    <input name="q" type="search" value="{{ query }}" placeholder="Movies, TV shows or a YouTube link" aria-label="Search movies and TV shows, or paste a link to play"
            enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false"{% if query.is_empty() %} autofocus{% endif %}>
   </form>
 
   {% if query.is_empty() %}
-  <p class="search-note">Plays from Netflix when it has the title, otherwise from Apple TV.</p>
+  <p class="search-note">Plays from Netflix when it has the title, otherwise from Apple TV. Paste a YouTube link to play it on the TV.</p>
   {% else %}
     {% if !movies.is_empty() %}
     <h2 class="addon-title">Movies</h2>

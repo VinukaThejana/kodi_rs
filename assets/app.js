@@ -266,6 +266,26 @@
     if (el.matches("[data-close-after]")) el.closest("dialog")?.close();
   });
 
+  // A link in the search bar plays on the TV instead of searching. This runs in the capture
+  // phase, ahead of htmx's own submit handler on the form.
+  document.addEventListener("submit", (e) => {
+    const form = e.target.closest(".search-bar");
+    const input = form?.elements.q;
+    if (!input || !/https?:\/\//.test(input.value)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    post("link", form, { url: input.value });
+    input.blur();
+  }, true);
+
+  // Sent by /link once Kodi starts the link.
+  document.body.addEventListener("played", (e) => {
+    const input = document.querySelector(".search-bar input");
+    if (input) input.value = "";
+    setView("remote");
+    toast(`Playing ${e.detail.value}`);
+  });
+
   // ── Streaming add-ons (Netflix, Apple TV) ────────────────────────
   // Add-on folders have no parent link, so remember the pages passed on the way in. Each
   // add-on page swapped into the pane pushes the one it replaced; Back pops instead.

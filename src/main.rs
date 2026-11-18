@@ -9,6 +9,7 @@
 
 mod bluetooth;
 mod kodi;
+mod link;
 mod listen;
 mod routes;
 mod views;
