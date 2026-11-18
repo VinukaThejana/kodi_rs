@@ -12,6 +12,9 @@ and it behaves like an app.
 - **Library**: browse movies and TV shows with posters and resume points. Shows have
   seasons, episodes and a "next episode" button. Tap anything to play it on the TV.
 - **Audio menu**: switch audio track, subtitles and sound output (TV, speakers, …).
+  Paired Bluetooth headphones are listed even when they aren't connected (say your
+  phone has the AirPods); tapping one connects it and moves Kodi's sound there. Pair
+  them once with `bluetoothctl` first.
 - **System media controls**: what's playing shows up on the iPhone lock screen, in
   Control Center and in macOS Now Playing, and play/pause/skip from there control Kodi.
 - **Listen on this device** (optional): stream Kodi's sound to the browser you're
@@ -259,6 +262,23 @@ on the lock screen and in macOS Now Playing.
 
 **Library links**: `…/#library` opens straight to the library and `…/#remote` to the
 remote. Handy for bookmarks.
+
+**Play a link**: paste a YouTube link (video, Short, live stream or playlist) into the
+search bar and press Go; it plays on the TV through Kodi's YouTube add-on. A `t=` start
+time is kept. Direct links to media files (`.mp4`, `.m3u8`, …) play too.
+
+**Share from the iPhone**: make a Shortcut so "Play on Kodi" shows in the Share menu
+of the YouTube app and Safari:
+
+1. In Shortcuts, tap **+**, then open the shortcut's settings (ⓘ) and turn on
+   **Show in Share Sheet**. Set it to receive **URLs** and **Text**.
+2. Add **Get Contents of URL**. Set the URL to the remote plus `/link`, e.g.
+   `http://192.168.1.13:8090/link`. Set **Method** to `POST`, **Request Body** to
+   `Form`, and add a text field named `url` whose value is **Shortcut Input**.
+3. Name it "Play on Kodi".
+
+Sharing the same link again starts it over. Links the remote can't play get a `400`
+with the reason.
 
 ## Configuration
 

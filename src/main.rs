@@ -7,13 +7,16 @@
 //! - `BIND` — defaults to `0.0.0.0:8090`
 //! - `GO2RTC_URL` — go2rtc's API for "Listen on this device"; defaults to `http://127.0.0.1:1984`
 
+mod bluetooth;
 mod kodi;
+mod link;
 mod listen;
 mod routes;
 mod views;
 
 use std::{env, io::IsTerminal, path::PathBuf};
 
+use bluetooth::Bluetooth;
 use kodi::Kodi;
 use listen::Listen;
 use routes::AppState;
@@ -37,10 +40,13 @@ async fn main() -> std::io::Result<()> {
     let listen = Listen::new(var("GO2RTC_URL", "http://127.0.0.1:1984"), state_dir.join("sync-ms"));
     let bind = var("BIND", "0.0.0.0:8090");
 
+    let bluetooth = Bluetooth::new().await;
+
     tokio::spawn(listen.clone().watchdog(kodi.clone()));
     tokio::spawn(listen.clone().keep_in_sync(kodi.clone()));
+    tokio::spawn(bluetooth.clone().switch_back(kodi.clone()));
 
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!("kodi-remote listening on http://{bind}");
-    axum::serve(listener, routes::router(AppState { kodi, listen })).await
+    axum::serve(listener, routes::router(AppState { kodi, listen, bluetooth })).await
 }

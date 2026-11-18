@@ -12,11 +12,18 @@ pub enum KodiError {
     Offline,
     #[error("Kodi error {code} from {method}: {message}")]
     Rpc { method: &'static str, code: i64, message: String },
+    /// Kodi is up but an add-on behind the call didn't finish within [`ADDON_TIMEOUT`].
+    #[error("Kodi took too long to answer")]
+    Slow,
     #[error("request to Kodi failed: {0}")]
     Http(#[from] reqwest::Error),
 }
 
 pub type Result<T> = std::result::Result<T, KodiError>;
+
+/// Time limit for calls that run add-on code, which fetches from the internet (Netflix takes
+/// a few seconds per page). Every other call uses the client's 4s default.
+const ADDON_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Connection details for one Kodi instance. Cheap to clone.
 #[derive(Clone)]
@@ -245,6 +252,36 @@ pub struct Resume {
     pub total: f64,
 }
 
+/// One entry of a directory listing (`Files.GetDirectory`), such as a Netflix add-on page.
+#[derive(Debug, Deserialize)]
+pub struct DirEntry {
+    pub label: String,
+    /// The path to browse (folders) or play (files).
+    pub file: String,
+    pub filetype: FileType,
+    /// `movie`, `tvshow`, `episode`, …; `unknown` for menus, categories and seasons.
+    #[serde(default, rename = "type")]
+    pub kind: String,
+    /// The bare title; `label` may carry numbering such as "1x01." or "S2E1 ·".
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub year: Option<u32>,
+    #[serde(default)]
+    pub episode: Option<i64>,
+    #[serde(default)]
+    pub art: HashMap<String, String>,
+    #[serde(default)]
+    pub resume: Option<Resume>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FileType {
+    File,
+    Directory,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SettingOption {
     pub label: String,
@@ -281,15 +318,33 @@ impl Kodi {
 
     /// Calls one JSON-RPC method and decodes its `result`.
     async fn call<R: DeserializeOwned>(&self, method: &'static str, params: Value) -> Result<R> {
+        self.call_within(None, method, params).await
+    }
+
+    /// Like [`Kodi::call`], with `timeout` replacing the client's default time limit. Running out
+    /// of that limit is [`KodiError::Slow`] rather than `Offline`: Kodi accepted the connection.
+    async fn call_within<R: DeserializeOwned>(
+        &self,
+        timeout: Option<Duration>,
+        method: &'static str,
+        params: Value,
+    ) -> Result<R> {
         let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
-        let res = self
+        let mut req = self
             .http
             .post(format!("{}/jsonrpc", self.base_url))
             .basic_auth(&self.user, Some(&self.password))
-            .json(&body)
+            .json(&body);
+        if let Some(timeout) = timeout {
+            req = req.timeout(timeout);
+        }
+        let res = req
             .send()
             .await
-            .map_err(offline_if_unreachable)?
+            .map_err(|e| match timeout {
+                Some(_) if e.is_timeout() && !e.is_connect() => KodiError::Slow,
+                _ => offline_if_unreachable(e),
+            })?
             .error_for_status()?
             .json::<RpcResponse<R>>()
             .await?;
@@ -352,6 +407,12 @@ impl Kodi {
 
     pub async fn nav(&self, key: NavKey) -> Result<()> {
         self.send(key.method(), json!({})).await
+    }
+
+    /// Replaces the text in Kodi's on-screen keyboard (or focused text field) with `text`.
+    /// `done` confirms it, as if Enter were pressed on the TV; otherwise the keyboard stays open.
+    pub async fn send_text(&self, text: &str, done: bool) -> Result<()> {
+        self.send("Input.SendText", json!({ "text": text, "done": done })).await
     }
 
     pub async fn play_pause(&self) -> Result<()> {
@@ -465,6 +526,42 @@ impl Kodi {
             .await
     }
 
+    /// Lists a directory such as an add-on page (`plugin://…`). The add-on builds it live,
+    /// so this waits up to [`ADDON_TIMEOUT`].
+    pub async fn directory(&self, path: &str) -> Result<Vec<DirEntry>> {
+        #[derive(Deserialize)]
+        struct GetDirectory {
+            #[serde(default)]
+            files: Vec<DirEntry>,
+        }
+        let res: GetDirectory = self
+            .call_within(
+                Some(ADDON_TIMEOUT),
+                "Files.GetDirectory",
+                json!({
+                    "directory": path,
+                    "media": "video",
+                    "properties": ["title", "year", "episode", "art", "resume"],
+                }),
+            )
+            .await?;
+        Ok(res.files)
+    }
+
+    /// Plays a file by path, e.g. an add-on's `plugin://…/play/…` URL. The add-on resolves
+    /// the stream before Kodi answers, so this waits up to [`ADDON_TIMEOUT`].
+    pub async fn play_file(&self, path: &str) -> Result<()> {
+        self.call_within::<Value>(Some(ADDON_TIMEOUT), "Player.Open", json!({ "item": { "file": path } }))
+            .await
+            .map(drop)
+    }
+
+    /// Runs an add-on with `params` (e.g. `/play/?…`) and returns at once, like Kodi's
+    /// `RunAddon`. The add-on drives the player itself, so its errors show on the TV.
+    pub async fn run_addon(&self, addon: &str, params: &str) -> Result<()> {
+        self.send("Addons.ExecuteAddon", json!({ "addonid": addon, "params": params })).await
+    }
+
     pub async fn set_audio_stream(&self, index: i64) -> Result<()> {
         let id = self.require_player().await?;
         self.send("Player.SetAudioStream", json!({ "playerid": id, "stream": index })).await
@@ -517,15 +614,11 @@ impl Kodi {
         Ok(Some(format!("{player_id}:{}:{}:{}", item["type"], item["id"], item["file"])))
     }
 
-    /// The selected audio device id alone; cheaper than [`Kodi::audio_outputs`].
+    /// The audio device id Kodi is using. Read via `GetSettings` rather than the lighter
+    /// `GetSettingValue`: when the selected device disappears, Kodi falls back to its default
+    /// output, but `GetSettingValue` keeps returning the device it fell back from.
     pub async fn audio_output(&self) -> Result<String> {
-        #[derive(Deserialize)]
-        struct GetSettingValue {
-            value: Value,
-        }
-        let res: GetSettingValue =
-            self.call("Settings.GetSettingValue", json!({ "setting": AUDIO_DEVICE_SETTING })).await?;
-        Ok(res.value.as_str().unwrap_or_default().to_owned())
+        Ok(self.audio_outputs().await?.current)
     }
 
     pub async fn set_audio_output(&self, device: &str) -> Result<()> {

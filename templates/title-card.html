@@ -1,0 +1,20 @@
+{#- One title in a card grid; included inside a `for t in …` loop over AddonItems. -#}
+<li>
+  {% if t.plays %}
+  <button class="card" hx-post="{{ t.href }}" data-play="{{ t.title }}">
+  {% else %}
+  <button class="card" hx-get="{{ t.href }}" hx-target="#media" hx-indicator="#media">
+  {% endif %}
+    <span class="poster poster-wide">
+      {% if let Some(src) = t.art %}
+      <img src="{{ src }}" alt="" loading="lazy" decoding="async">
+      {% else %}
+      <span class="poster-empty">{{ t.title }}</span>
+      {% endif %}
+      {% if let Some(p) = t.progress %}<span class="resume" style="--progress: {{ p }}%"></span>{% endif %}
+      {% if t.plays %}<span class="poster-play"><svg><use href="#i-play"/></svg></span>{% endif %}
+    </span>
+    <span class="card-title">{{ t.title }}</span>
+    <span class="card-year">{{ t.detail }}</span>
+  </button>
+</li>

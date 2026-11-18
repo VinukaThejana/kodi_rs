@@ -57,6 +57,13 @@
       <svg class="row-check"><use href="#i-check"/></svg>
     </button>
     {% endfor %}
+    {#- Paired headphones that aren't connected: tapping connects them, then switches to them. -#}
+    {% for h in headphones %}
+    <button class="row" hx-post="audio/bluetooth" hx-target="#audio-body" name="address" value="{{ h.value }}" aria-pressed="false">
+      <span class="row-text"><span class="row-title">{{ h.title }}</span><span class="row-detail"><span class="when-idle">{{ h.detail }}</span><span class="when-busy">Connecting…</span></span></span>
+      <svg class="row-check"><use href="#i-check"/></svg>
+    </button>
+    {% endfor %}
   </div>
   {% if !playing %}<p class="group-note">Audio and subtitle tracks appear here while something is playing.</p>{% endif %}
 </section>

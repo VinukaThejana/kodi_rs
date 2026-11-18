@@ -2,10 +2,11 @@
 
 use askama::Template;
 
+use crate::bluetooth::Headphones;
 use crate::listen;
 use crate::kodi::{
-    self, AudioOutputs, AudioStream, Episode, Kodi, KodiError, Movie, Playback, Resume, SubtitleStream, TvShow,
-    percent_encode,
+    self, AudioOutputs, AudioStream, DirEntry, Episode, FileType, Kodi, KodiError, Movie, Playback, Resume,
+    SubtitleStream, TvShow, percent_encode,
 };
 
 #[derive(Template)]
@@ -47,6 +48,127 @@ pub struct ShowPage {
     pub seasons: Vec<Season>,
 }
 
+/// An add-on the remote browses through Kodi, using the add-on's own menus. `Search` is
+/// TMDb Helper, entered only through [`SearchPage`] results: it plays a title from Netflix
+/// if Netflix has it, otherwise from Apple TV (its player files in Kodi's userdata).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Service {
+    Netflix,
+    AppleTv,
+    Search,
+}
+
+impl Service {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Netflix => "Netflix",
+            Self::AppleTv => "Apple TV",
+            Self::Search => "Search",
+        }
+    }
+
+    /// The `/addon/{slug}` URL segment; matches the serde name.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Netflix => "netflix",
+            Self::AppleTv => "appletv",
+            Self::Search => "search",
+        }
+    }
+
+    /// Where Back goes once the page trail is empty: the add-on's home, or the search page.
+    pub fn root(self) -> &'static str {
+        match self {
+            Self::Netflix => "addon/netflix",
+            Self::AppleTv => "addon/appletv",
+            Self::Search => "search",
+        }
+    }
+
+    /// The add-on's top menu (for Netflix, the active profile's home). The remote never links
+    /// to TMDb Helper's own menu, but it is the safe default for a bare `addon/search`.
+    pub fn home(self) -> &'static str {
+        match self {
+            Self::Netflix => "plugin://plugin.video.netflix/directory/home/",
+            Self::AppleTv => "plugin://plugin.video.appletv/",
+            Self::Search => TMDB_HELPER,
+        }
+    }
+
+    /// Whether `path` is inside this add-on. Routes refuse anything else, so they can't be
+    /// used to browse or play arbitrary files on the Kodi box.
+    pub fn owns(self, path: &str) -> bool {
+        let prefix = match self {
+            Self::Netflix => "plugin://plugin.video.netflix/",
+            Self::AppleTv => "plugin://plugin.video.appletv/",
+            Self::Search => TMDB_HELPER,
+        };
+        path.starts_with(prefix)
+    }
+
+    /// Entries that need the TV (search types on its keyboard, sign-in) or don't apply here.
+    fn hidden(self) -> &'static [&'static str] {
+        match self {
+            Self::Netflix => &["/directory/search/", "/directory/exported/", "/directory/profiles/"],
+            Self::AppleTv => &["action=search", "action=sign_out"],
+            Self::Search => &[],
+        }
+    }
+
+    fn url(self, path: &str, title: &str) -> String {
+        format!("addon/{}?path={}&title={}", self.slug(), percent_encode(path), percent_encode(title))
+    }
+}
+
+const TMDB_HELPER: &str = "plugin://plugin.video.themoviedb.helper/";
+
+/// TMDb Helper's search listing for `query`; `kind` is `movie` or `tv`.
+pub fn tmdb_search_path(kind: &str, query: &str) -> String {
+    format!("{TMDB_HELPER}?info=search&tmdb_type={kind}&query={}", percent_encode(query))
+}
+
+/// The library's Search segment: a search field and, once searched, TMDb's matching movies
+/// and shows. Its `data-addon-url` makes it the start of the page trail, so Back from a
+/// show's seasons returns to these results.
+#[derive(Template)]
+#[template(path = "search.html")]
+pub struct SearchPage {
+    pub online: bool,
+    pub query: String,
+    pub url: String,
+    pub movies: Vec<AddonItem>,
+    pub shows: Vec<AddonItem>,
+}
+
+/// One page of a streaming add-on, read through Kodi. Its entries are split by how they
+/// render: titles as landscape cards, episodes as rows, and every other folder (menus,
+/// categories, seasons, "Next page") as a plain list.
+#[derive(Template)]
+#[template(path = "addon.html")]
+pub struct AddonPage {
+    pub service: Service,
+    pub online: bool,
+    pub title: String,
+    /// This page's own URL, which the client keeps so Back can return here.
+    pub url: String,
+    pub home: bool,
+    pub titles: Vec<AddonItem>,
+    pub episodes: Vec<AddonItem>,
+    pub folders: Vec<AddonItem>,
+}
+
+pub struct AddonItem {
+    pub title: String,
+    /// Year for titles, running time for episodes.
+    pub detail: String,
+    pub art: Option<String>,
+    pub progress: Option<String>,
+    /// Playable items post to this URL; folders load it into the library pane.
+    pub href: String,
+    pub plays: bool,
+}
+
 #[derive(Template)]
 #[template(path = "audio.html")]
 pub struct AudioSheet {
@@ -55,6 +177,9 @@ pub struct AudioSheet {
     pub subtitles: Vec<Choice>,
     pub subtitles_off: bool,
     pub outputs: Vec<Choice>,
+    /// Paired Bluetooth headphones Kodi can't list yet because they aren't connected;
+    /// `value` is the device address, which tapping connects.
+    pub headphones: Vec<Choice>,
     /// The stream sink exists, so "Listen on this device" can be offered.
     pub can_listen: bool,
     /// Kodi is playing into the stream sink rather than a speaker.
@@ -293,6 +418,99 @@ impl EpisodeRow {
     }
 }
 
+impl AddonPage {
+    /// `path` is the add-on folder these `entries` were listed from.
+    pub fn new(service: Service, path: &str, title: String, home: bool, entries: Vec<DirEntry>) -> Self {
+        let mut page = Self {
+            url: service.url(path, &title),
+            service,
+            online: true,
+            title,
+            home,
+            titles: vec![],
+            episodes: vec![],
+            folders: vec![],
+        };
+        let hidden = service.hidden();
+        for e in entries.into_iter().filter(|e| !hidden.iter().any(|h| e.file.contains(h))) {
+            let list = match (e.filetype, e.kind.as_str()) {
+                (FileType::File, "episode") => &mut page.episodes,
+                (FileType::File, _) | (FileType::Directory, "tvshow") => &mut page.titles,
+                (FileType::Directory, _) => &mut page.folders,
+            };
+            list.push(AddonItem::new(service, e));
+        }
+        page
+    }
+
+    pub fn offline(service: Service) -> Self {
+        Self {
+            service,
+            online: false,
+            title: String::new(),
+            url: String::new(),
+            home: true,
+            titles: vec![],
+            episodes: vec![],
+            folders: vec![],
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.titles.is_empty() && self.episodes.is_empty() && self.folders.is_empty()
+    }
+}
+
+impl SearchPage {
+    /// The field alone, before anything is searched (or while Kodi is off).
+    pub fn blank(online: bool) -> Self {
+        Self { online, query: String::new(), url: "search".into(), movies: vec![], shows: vec![] }
+    }
+
+    /// Results of [`tmdb_search_path`] for movies and for shows. TMDb Helper appends a
+    /// "Next page" folder to each; the first page (20 of each) is plenty from a remote.
+    pub fn new(query: String, movies: Vec<DirEntry>, shows: Vec<DirEntry>) -> Self {
+        let keep = |entries: Vec<DirEntry>, kind: &str| -> Vec<AddonItem> {
+            entries.into_iter().filter(|e| e.kind == kind).map(|e| AddonItem::new(Service::Search, e)).collect()
+        };
+        Self {
+            online: true,
+            url: format!("search?q={}", percent_encode(&query)),
+            query,
+            movies: keep(movies, "movie"),
+            shows: keep(shows, "tvshow"),
+        }
+    }
+}
+
+impl AddonItem {
+    fn new(service: Service, e: DirEntry) -> Self {
+        let plays = e.filetype == FileType::File;
+        let detail = match (e.kind.as_str(), &e.resume) {
+            ("episode", Some(r)) if r.total >= 60.0 => format!("{} min", (r.total / 60.0).round()),
+            ("episode", _) => String::new(),
+            _ => year(e.year),
+        };
+        Self {
+            href: if plays {
+                format!("addon/{}/play?path={}", service.slug(), percent_encode(&e.file))
+            } else {
+                service.url(&e.file, &e.label)
+            },
+            art: ["landscape", "thumb", "poster"].iter().find_map(|k| e.art.get(*k)).map(|src| art_url(src)),
+            progress: resume_percent(e.resume.as_ref()),
+            title: match e.episode {
+                Some(n) if e.kind == "episode" => {
+                    format!("{n}. {}", if e.title.is_empty() { &e.label } else { &e.title })
+                }
+                _ => e.label,
+            },
+            detail,
+            plays,
+        }
+    }
+}
+
 /// Watched fraction as a CSS percentage, for items that were started but not finished.
 fn resume_percent(resume: Option<&Resume>) -> Option<String> {
     resume
@@ -315,18 +533,32 @@ fn plural(n: u32, noun: &str) -> String {
 
 impl AudioSheet {
     /// `sync_earlier_ms` is the "Listen on this device" sync adjustment, shown while listening.
-    pub async fn load(kodi: &Kodi, sync_earlier_ms: i32) -> Result<Self, KodiError> {
+    /// `headphones` are the paired Bluetooth audio devices; those Kodi already lists as an
+    /// output are left out, so each device appears once.
+    pub async fn load(kodi: &Kodi, sync_earlier_ms: i32, headphones: Vec<Headphones>) -> Result<Self, KodiError> {
         let playback = kodi.playback().await?;
         let audio_outputs = kodi.audio_outputs().await?;
         let can_listen =
             audio_outputs.options.iter().any(|o| o.value.as_str().is_some_and(listen::is_stream_device));
         let listening = listen::is_stream_device(&audio_outputs.current);
+        let headphones = headphones
+            .into_iter()
+            .filter(|h| !audio_outputs.options.iter().any(|o| o.value.as_str().is_some_and(|v| h.address.is_output(v))))
+            .map(|h| Choice {
+                value: h.address.to_string(),
+                detail: if h.connected { "Connected · not in Kodi yet" } else { "Bluetooth · Not connected" }
+                    .to_owned(),
+                title: h.name,
+                selected: false,
+            })
+            .collect();
         let mut sheet = Self {
             playing: false,
             tracks: vec![],
             subtitles: vec![],
             subtitles_off: true,
             outputs: output_choices(audio_outputs),
+            headphones,
             can_listen,
             listening,
             sync_label: match sync_earlier_ms {
@@ -432,6 +664,8 @@ fn output_choices(outputs: AudioOutputs) -> Vec<Choice> {
             let detail = if device.contains("raop_sink") {
                 // PipeWire's AirPlay outputs (pipewire-zeroconf), e.g. the MacBook.
                 "AirPlay".to_owned()
+            } else if device.contains("bluez_output") {
+                "Bluetooth".to_owned()
             } else if title == hardware {
                 String::new()
             } else {
@@ -456,4 +690,96 @@ fn art_url(src: &str) -> String {
 fn clock(secs: u64) -> String {
     let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    /// Entries shaped like the Netflix add-on's `Files.GetDirectory` output.
+    fn entries() -> Vec<DirEntry> {
+        serde_json::from_value(json!([
+            { "label": "My List", "file": "plugin://plugin.video.netflix/directory/video_list_sorted/myList/queue/", "filetype": "directory", "type": "unknown" },
+            { "label": "Search", "file": "plugin://plugin.video.netflix/directory/search/search/", "filetype": "directory", "type": "unknown" },
+            { "label": "Some Show", "file": "plugin://plugin.video.netflix/directory/show/1/", "filetype": "directory", "type": "tvshow", "year": 2019 },
+            { "label": "Some Movie", "file": "plugin://plugin.video.netflix/play/movie/2/", "filetype": "file", "type": "movie",
+              "resume": { "position": 30.0, "total": 120.0 } },
+            { "label": "Pilot", "file": "plugin://plugin.video.netflix/play/show/1/season/3/episode/4/", "filetype": "file", "type": "episode",
+              "episode": 1, "resume": { "position": 0.0, "total": 3141.0 } },
+        ]))
+        .unwrap()
+    }
+
+    fn titles(items: &[AddonItem]) -> Vec<&str> {
+        items.iter().map(|i| i.title.as_str()).collect()
+    }
+
+    #[test]
+    fn addon_page_sorts_entries_by_how_they_render() {
+        let page = AddonPage::new(Service::Netflix, Service::Netflix.home(), "Netflix".into(), true, entries());
+
+        assert_eq!(titles(&page.folders), ["My List"], "search is hidden");
+        assert_eq!(titles(&page.titles), ["Some Show", "Some Movie"]);
+        assert_eq!(titles(&page.episodes), ["1. Pilot"]);
+
+        let (show, movie, episode) = (&page.titles[0], &page.titles[1], &page.episodes[0]);
+        assert!(!show.plays && show.href.starts_with("addon/netflix?path="));
+        assert!(movie.plays && movie.href.starts_with("addon/netflix/play?path="));
+        assert_eq!(movie.progress.as_deref(), Some("25.0"));
+        assert_eq!(episode.detail, "52 min");
+    }
+
+    #[test]
+    fn apple_tv_hides_entries_that_need_the_tv_and_owns_only_its_paths() {
+        let entries = serde_json::from_value(json!([
+            { "label": "Featured", "file": "plugin://plugin.video.appletv/?action=featured", "filetype": "directory", "type": "unknown" },
+            { "label": "Search", "file": "plugin://plugin.video.appletv/?action=search", "filetype": "directory", "type": "unknown" },
+            { "label": "Sign out", "file": "plugin://plugin.video.appletv/?action=sign_out", "filetype": "directory", "type": "unknown" },
+        ]))
+        .unwrap();
+        let page = AddonPage::new(Service::AppleTv, Service::AppleTv.home(), "Apple TV".into(), true, entries);
+
+        assert_eq!(titles(&page.folders), ["Featured"]);
+        assert!(page.folders[0].href.starts_with("addon/appletv?path="));
+        assert!(!Service::AppleTv.owns("plugin://plugin.video.netflix/directory/home/"));
+        assert!(!Service::Netflix.owns("/home/user/Movies/"));
+    }
+
+    #[test]
+    fn search_keeps_only_titles_and_plays_them_through_tmdb_helper() {
+        let movies = serde_json::from_value(json!([
+            { "label": "The Break-Up", "file": "plugin://plugin.video.themoviedb.helper/?info=play&tmdb_type=movie&tmdb_id=9767", "filetype": "file", "type": "movie", "year": 2006 },
+            { "label": "Next page", "file": "plugin://plugin.video.themoviedb.helper/?info=search&tmdb_type=movie&query=break&page=2", "filetype": "directory", "type": "unknown" },
+        ]))
+        .unwrap();
+        let shows = serde_json::from_value(json!([
+            { "label": "Severance", "file": "plugin://plugin.video.themoviedb.helper/?info=seasons&tmdb_type=tv&tmdb_id=95396", "filetype": "directory", "type": "tvshow" },
+        ]))
+        .unwrap();
+        let page = SearchPage::new("break up".into(), movies, shows);
+
+        assert_eq!(page.url, "search?q=break%20up");
+        assert_eq!(titles(&page.movies), ["The Break-Up"]);
+        assert!(
+            page.movies[0].plays
+                && page.movies[0]
+                    .href
+                    .starts_with("addon/search/play?path=plugin%3A%2F%2Fplugin.video.themoviedb.helper")
+        );
+        assert_eq!(titles(&page.shows), ["Severance"]);
+        assert!(page.shows[0].href.starts_with("addon/search?path="));
+    }
+
+    #[test]
+    fn episodes_are_numbered_once() {
+        let entries = serde_json::from_value(json!([
+            { "label": "1x01. Good News About Hell", "title": "Good News About Hell", "file": "plugin://plugin.video.themoviedb.helper/?info=play&tmdb_type=tv&tmdb_id=95396&season=1&episode=1", "filetype": "file", "type": "episode", "episode": 1 },
+        ]))
+        .unwrap();
+        let page = AddonPage::new(Service::Search, Service::Search.home(), "Season 1".into(), false, entries);
+
+        assert_eq!(titles(&page.episodes), ["1. Good News About Hell"]);
+    }
 }

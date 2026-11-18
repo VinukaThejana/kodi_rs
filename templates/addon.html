@@ -1,0 +1,64 @@
+{% if !online %}
+<div class="empty">
+  <svg><use href="#i-power"/></svg>
+  <p>Kodi is off</p>
+  <span>Turn it on from the remote to browse {{ service.name() }}.</span>
+</div>
+{% else %}
+{#- Add-on folders have no parent link, so app.js keeps the trail of data-addon-url values for Back;
+    data-addon-back is where Back goes once that trail is empty. -#}
+<div class="addon" data-addon-url="{{ url }}" {% if home %}data-addon-home{% endif %}>
+  {% if !home %}
+  <button class="back-link" data-addon-back="{{ service.root() }}" hx-indicator="#media"><svg><use href="#i-back"/></svg>Back</button>
+  <h2 class="addon-title">{{ title }}</h2>
+  {% endif %}
+
+  {% if !titles.is_empty() %}
+  <ul class="grid grid-wide">
+    {% for t in titles %}
+    {% include "title-card.html" %}
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if !episodes.is_empty() %}
+  <ul class="episodes">
+    {% for e in episodes %}
+    <li>
+      <button class="episode" hx-post="{{ e.href }}" data-play="{{ e.title }}">
+        <span class="episode-thumb">
+          {% if let Some(src) = e.art %}<img src="{{ src }}" alt="" loading="lazy" decoding="async">{% endif %}
+          {% if let Some(p) = e.progress %}<span class="resume" style="--progress: {{ p }}%"></span>{% endif %}
+          <span class="poster-play"><svg><use href="#i-play"/></svg></span>
+        </span>
+        <span class="episode-text">
+          <span class="episode-title">{{ e.title }}</span>
+          {% if !e.detail.is_empty() %}<span class="episode-meta">{{ e.detail }}</span>{% endif %}
+        </span>
+      </button>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if !folders.is_empty() %}
+  <ul class="folders">
+    {% for f in folders %}
+    <li>
+      <button class="folder" hx-get="{{ f.href }}" hx-target="#media" hx-indicator="#media">
+        <span>{{ f.title }}</span><svg><use href="#i-back"/></svg>
+      </button>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+  {% if self.is_empty() %}
+  <div class="empty">
+    <svg><use href="#i-film"/></svg>
+    <p>Nothing here</p>
+    <span>{{ service.name() }} didn't return anything for this page.</span>
+  </div>
+  {% endif %}
+</div>
+{% endif %}
