@@ -517,15 +517,11 @@ impl Kodi {
         Ok(Some(format!("{player_id}:{}:{}:{}", item["type"], item["id"], item["file"])))
     }
 
-    /// The selected audio device id alone; cheaper than [`Kodi::audio_outputs`].
+    /// The audio device id Kodi is using. Read via `GetSettings` rather than the lighter
+    /// `GetSettingValue`: when the selected device disappears, Kodi falls back to its default
+    /// output, but `GetSettingValue` keeps returning the device it fell back from.
     pub async fn audio_output(&self) -> Result<String> {
-        #[derive(Deserialize)]
-        struct GetSettingValue {
-            value: Value,
-        }
-        let res: GetSettingValue =
-            self.call("Settings.GetSettingValue", json!({ "setting": AUDIO_DEVICE_SETTING })).await?;
-        Ok(res.value.as_str().unwrap_or_default().to_owned())
+        Ok(self.audio_outputs().await?.current)
     }
 
     pub async fn set_audio_output(&self, device: &str) -> Result<()> {

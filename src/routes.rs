@@ -17,6 +17,7 @@ use serde_json::json;
 use tokio::process::Command;
 
 use crate::{
+    bluetooth::{Address, Bluetooth, BluetoothError},
     kodi::{self, Kodi, KodiError, NavKey, Subtitle, Volume, VolumeStep},
     listen::{self, Listen, ListenError},
     views::{
@@ -26,11 +27,12 @@ use crate::{
 };
 
 /// Everything handlers share. Handlers extract just the part they need (`State<Kodi>`,
-/// `State<Listen>`) via `FromRef`.
+/// `State<Listen>`) via `FromRef`, or all of it for the audio sheet.
 #[derive(Clone, FromRef)]
 pub struct AppState {
     pub kodi: Kodi,
     pub listen: Listen,
+    pub bluetooth: Bluetooth,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -53,6 +55,7 @@ pub fn router(state: AppState) -> Router {
         .route("/audio/track", post(set_track))
         .route("/audio/subtitle", post(set_subtitle))
         .route("/audio/output", post(set_output))
+        .route("/audio/bluetooth", post(connect_headphones))
         .route("/listen/start", post(listen_start))
         .route("/listen/offer", post(listen_offer))
         .route("/listen/state", get(listen_state))
@@ -89,6 +92,8 @@ pub enum AppError {
     Launch(String),
     #[error(transparent)]
     Listen(ListenError),
+    #[error(transparent)]
+    Bluetooth(#[from] BluetoothError),
 }
 
 impl From<ListenError> for AppError {
@@ -104,6 +109,8 @@ impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = match &self {
             Self::Kodi(KodiError::Offline) | Self::Listen(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Bluetooth(BluetoothError::NotPaired) => StatusCode::BAD_REQUEST,
+            Self::Bluetooth(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Kodi(_) => StatusCode::BAD_GATEWAY,
             Self::Render(_) | Self::Launch(_) => StatusCode::INTERNAL_SERVER_ERROR,
         };
@@ -243,8 +250,17 @@ async fn mute(State(kodi): State<Kodi>) -> Result<impl IntoResponse> {
     Ok(volume_hud(kodi.toggle_mute().await?))
 }
 
-async fn audio(State(kodi): State<Kodi>, State(listen): State<Listen>) -> Result<Html<String>> {
-    render(AudioSheet::load(&kodi, listen.sync_earlier_ms()).await?)
+async fn audio(State(app): State<AppState>) -> Result<Html<String>> {
+    render(load_sheet(&app).await?)
+}
+
+/// The audio sheet as it stands. Bluetooth trouble only hides the headphones rows.
+async fn load_sheet(app: &AppState) -> Result<AudioSheet> {
+    let headphones = app.bluetooth.headphones().await.unwrap_or_else(|e| {
+        tracing::debug!("listing Bluetooth headphones: {e}");
+        vec![]
+    });
+    Ok(AudioSheet::load(&app.kodi, app.listen.sync_earlier_ms(), headphones).await?)
 }
 
 #[derive(Deserialize)]
@@ -255,14 +271,14 @@ struct TrackForm {
 /// Renders the audio sheet once it reflects a change just sent to Kodi. Kodi applies stream
 /// switches asynchronously (~0.5s), so an immediate re-read still shows the old selection.
 /// Gives up after ~1.5s and renders whatever Kodi reports.
-async fn sheet_once(kodi: &Kodi, listen: &Listen, applied: impl Fn(&AudioSheet) -> bool) -> Result<Html<String>> {
-    let mut sheet = AudioSheet::load(kodi, listen.sync_earlier_ms()).await?;
+async fn sheet_once(app: &AppState, applied: impl Fn(&AudioSheet) -> bool) -> Result<Html<String>> {
+    let mut sheet = load_sheet(app).await?;
     for _ in 0..10 {
         if applied(&sheet) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
-        sheet = AudioSheet::load(kodi, listen.sync_earlier_ms()).await?;
+        sheet = load_sheet(app).await?;
     }
     render(sheet)
 }
@@ -271,10 +287,10 @@ fn is_selected(choices: &[Choice], value: &str) -> bool {
     choices.iter().any(|c| c.selected && c.value == value)
 }
 
-async fn set_track(State(kodi): State<Kodi>, State(listen): State<Listen>, Form(f): Form<TrackForm>) -> Result<Html<String>> {
-    kodi.set_audio_stream(f.index).await?;
+async fn set_track(State(app): State<AppState>, Form(f): Form<TrackForm>) -> Result<Html<String>> {
+    app.kodi.set_audio_stream(f.index).await?;
     let index = f.index.to_string();
-    sheet_once(&kodi, &listen, |s| is_selected(&s.tracks, &index)).await
+    sheet_once(&app, |s| is_selected(&s.tracks, &index)).await
 }
 
 #[derive(Deserialize)]
@@ -282,13 +298,13 @@ struct SubtitleForm {
     index: Subtitle,
 }
 
-async fn set_subtitle(State(kodi): State<Kodi>, State(listen): State<Listen>, Form(f): Form<SubtitleForm>) -> Result<Html<String>> {
-    kodi.set_subtitle(f.index).await?;
+async fn set_subtitle(State(app): State<AppState>, Form(f): Form<SubtitleForm>) -> Result<Html<String>> {
+    app.kodi.set_subtitle(f.index).await?;
     match f.index {
-        Subtitle::Off => sheet_once(&kodi, &listen, |s| s.subtitles_off).await,
+        Subtitle::Off => sheet_once(&app, |s| s.subtitles_off).await,
         Subtitle::Track(index) => {
             let index = index.to_string();
-            sheet_once(&kodi, &listen, |s| is_selected(&s.subtitles, &index)).await
+            sheet_once(&app, |s| is_selected(&s.subtitles, &index)).await
         }
     }
 }
@@ -298,15 +314,51 @@ struct OutputForm {
     value: String,
 }
 
-async fn set_output(State(kodi): State<Kodi>, State(listen): State<Listen>, Form(f): Form<OutputForm>) -> Result<Html<String>> {
-    kodi.set_audio_output(&f.value).await?;
-    sheet_once(&kodi, &listen, |s| is_selected(&s.outputs, &f.value)).await
+async fn set_output(State(app): State<AppState>, Form(f): Form<OutputForm>) -> Result<Html<String>> {
+    app.kodi.set_audio_output(&f.value).await?;
+    // Picking "System Default" must cancel switching back to headphones; see `switch_back`.
+    app.bluetooth.remember_choice(&f.value);
+    sheet_once(&app, |s| is_selected(&s.outputs, &f.value)).await
+}
+
+#[derive(Deserialize)]
+struct HeadphonesForm {
+    address: Address,
+}
+
+/// Connects paired Bluetooth headphones (taking them from e.g. a phone) and switches Kodi's
+/// sound to them once Kodi lists their output. Kodi's sound returns to them if they drop out
+/// (see [`Bluetooth::switch_back`]).
+async fn connect_headphones(State(app): State<AppState>, Form(f): Form<HeadphonesForm>) -> Result<Html<String>> {
+    let name = app.bluetooth.connect(&f.address).await?;
+    let Some(output) = wait_for_output(&app.kodi, &f.address, Duration::from_secs(10)).await? else {
+        return Err(BluetoothError::NotInKodi(name).into());
+    };
+    app.kodi.set_audio_output(&output).await?;
+    sheet_once(&app, |s| is_selected(&s.outputs, &output)).await
+}
+
+/// Polls Kodi's output list until the headphones' sink shows up (PipeWire adds it a moment
+/// after the Bluetooth connection), returning its Kodi device id, or `None` after `timeout`.
+async fn wait_for_output(kodi: &Kodi, address: &Address, timeout: Duration) -> Result<Option<String>> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let outputs = kodi.audio_outputs().await?;
+        let found = outputs.options.iter().filter_map(|o| o.value.as_str()).find(|v| address.is_output(v));
+        if let Some(device) = found {
+            return Ok(Some(device.to_owned()));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 /// Routes Kodi's sound into the stream; the page connects to it via [`listen_offer`].
-async fn listen_start(State(kodi): State<Kodi>, State(listen): State<Listen>) -> Result<Html<String>> {
-    listen.start(&kodi).await?;
-    sheet_once(&kodi, &listen, |s| s.listening).await
+async fn listen_start(State(app): State<AppState>) -> Result<Html<String>> {
+    app.listen.start(&app.kodi).await?;
+    sheet_once(&app, |s| s.listening).await
 }
 
 /// One tap of "Earlier" (+1) or "Later" (-1) on the Sync control.
@@ -328,17 +380,13 @@ struct SyncForm {
 }
 
 /// Moves the streamed sound earlier or later against the TV picture, effective immediately.
-async fn listen_sync(
-    State(kodi): State<Kodi>,
-    State(listen): State<Listen>,
-    Form(f): Form<SyncForm>,
-) -> Result<Html<String>> {
-    listen.nudge_sync(f.step.0);
+async fn listen_sync(State(app): State<AppState>, Form(f): Form<SyncForm>) -> Result<Html<String>> {
+    app.listen.nudge_sync(f.step.0);
     // Nothing playing is fine: the sync keeper applies it when something starts.
-    if let Err(e) = listen.apply_sync(&kodi).await {
+    if let Err(e) = app.listen.apply_sync(&app.kodi).await {
         tracing::debug!("applying sync now: {e}");
     }
-    render(AudioSheet::load(&kodi, listen.sync_earlier_ms()).await?)
+    render(load_sheet(&app).await?)
 }
 
 /// `"true"` while Kodi plays into the stream, so a reloaded page knows whether to resume.

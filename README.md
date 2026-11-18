@@ -12,6 +12,9 @@ and it behaves like an app.
 - **Library**: browse movies and TV shows with posters and resume points. Shows have
   seasons, episodes and a "next episode" button. Tap anything to play it on the TV.
 - **Audio menu**: switch audio track, subtitles and sound output (TV, speakers, …).
+  Paired Bluetooth headphones are listed even when they aren't connected (say your
+  phone has the AirPods); tapping one connects it and moves Kodi's sound there. Pair
+  them once with `bluetoothctl` first.
 - **System media controls**: what's playing shows up on the iPhone lock screen, in
   Control Center and in macOS Now Playing, and play/pause/skip from there control Kodi.
 - **Listen on this device** (optional): stream Kodi's sound to the browser you're

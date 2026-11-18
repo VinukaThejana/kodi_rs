@@ -2,6 +2,7 @@
 
 use askama::Template;
 
+use crate::bluetooth::Headphones;
 use crate::listen;
 use crate::kodi::{
     self, AudioOutputs, AudioStream, Episode, Kodi, KodiError, Movie, Playback, Resume, SubtitleStream, TvShow,
@@ -55,6 +56,9 @@ pub struct AudioSheet {
     pub subtitles: Vec<Choice>,
     pub subtitles_off: bool,
     pub outputs: Vec<Choice>,
+    /// Paired Bluetooth headphones Kodi can't list yet because they aren't connected;
+    /// `value` is the device address, which tapping connects.
+    pub headphones: Vec<Choice>,
     /// The stream sink exists, so "Listen on this device" can be offered.
     pub can_listen: bool,
     /// Kodi is playing into the stream sink rather than a speaker.
@@ -315,18 +319,32 @@ fn plural(n: u32, noun: &str) -> String {
 
 impl AudioSheet {
     /// `sync_earlier_ms` is the "Listen on this device" sync adjustment, shown while listening.
-    pub async fn load(kodi: &Kodi, sync_earlier_ms: i32) -> Result<Self, KodiError> {
+    /// `headphones` are the paired Bluetooth audio devices; those Kodi already lists as an
+    /// output are left out, so each device appears once.
+    pub async fn load(kodi: &Kodi, sync_earlier_ms: i32, headphones: Vec<Headphones>) -> Result<Self, KodiError> {
         let playback = kodi.playback().await?;
         let audio_outputs = kodi.audio_outputs().await?;
         let can_listen =
             audio_outputs.options.iter().any(|o| o.value.as_str().is_some_and(listen::is_stream_device));
         let listening = listen::is_stream_device(&audio_outputs.current);
+        let headphones = headphones
+            .into_iter()
+            .filter(|h| !audio_outputs.options.iter().any(|o| o.value.as_str().is_some_and(|v| h.address.is_output(v))))
+            .map(|h| Choice {
+                value: h.address.to_string(),
+                detail: if h.connected { "Connected · not in Kodi yet" } else { "Bluetooth · Not connected" }
+                    .to_owned(),
+                title: h.name,
+                selected: false,
+            })
+            .collect();
         let mut sheet = Self {
             playing: false,
             tracks: vec![],
             subtitles: vec![],
             subtitles_off: true,
             outputs: output_choices(audio_outputs),
+            headphones,
             can_listen,
             listening,
             sync_label: match sync_earlier_ms {
@@ -432,6 +450,8 @@ fn output_choices(outputs: AudioOutputs) -> Vec<Choice> {
             let detail = if device.contains("raop_sink") {
                 // PipeWire's AirPlay outputs (pipewire-zeroconf), e.g. the MacBook.
                 "AirPlay".to_owned()
+            } else if device.contains("bluez_output") {
+                "Bluetooth".to_owned()
             } else if title == hardware {
                 String::new()
             } else {
