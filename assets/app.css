@@ -292,6 +292,79 @@ svg { width: 24px; height: 24px; display: block; flex: none; }
 [data-state="unreachable"] .led { background: var(--red); }
 .link { color: var(--blue); font-weight: 500; }
 
+/* Browser mode: a website on the TV in Kodi's place (browser.rs) */
+
+[data-state="browser"] .led { background: var(--blue); box-shadow: 0 0 10px 1px rgba(10, 132, 255, 0.6); }
+@media (pointer: coarse) { .with-mouse { display: none; } }
+@media (pointer: fine) { .with-touch { display: none; } }
+/* The pad becomes a trackpad: no direction dots or centre button, and a trackpad's shape. */
+.pad { transition: border-radius 0.4s var(--ease-out); }
+.app:has(.status[data-browser="true"]) :is(.pad-dot, .pad-center) { opacity: 0; }
+.app:has(.status[data-browser="true"]) .pad { border-radius: 30px; }
+/* Mouse mode (app.js): the mouse is on the TV until Esc. */
+.pad[data-captured] { box-shadow: 0 0 0 2px var(--blue), 0 0 28px -4px rgba(10, 132, 255, 0.6); }
+.pad[data-captured]::after {
+  content: "Mouse on the TV · Esc to release";
+  position: absolute;
+  inset: auto 0 18px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--label-2);
+}
+.browser-bar { gap: 12px; }
+.browser-bar p { font-size: 15px; }
+
+/* The trackpad (browser mode): its how-to, faded while a finger is down, and the strip down the
+   right edge that scrolls with one finger (app.js, SCROLL_EDGE). */
+.pad-hint, .pad-scroll { display: none; }
+.app:has(.status[data-browser="true"]) :is(.pad-hint, .pad-scroll) { display: block; }
+.pad-hint {
+  position: absolute;
+  left: 0;
+  right: 18%;
+  top: 50%;
+  translate: 0 -50%;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--label-3);
+  pointer-events: none;
+  transition: opacity 0.25s ease;
+}
+.pad.touching .pad-hint, .pad[data-captured] .pad-hint { opacity: 0; }
+.pad-scroll {
+  position: absolute;
+  top: 14px;
+  bottom: 14px;
+  right: 10px;
+  width: 14%;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.04);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05);
+  pointer-events: none;
+}
+.pad-scroll span {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  translate: -50% -50%;
+  rotate: 90deg;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--label-3);
+}
+.pad[data-captured] .pad-scroll { display: none; }
+/* Kodi-only parts of the page give way to the site's while the browser is open. */
+.when-browser { display: none; }
+body:has(.status[data-browser="true"]) .when-browser { display: inline; }
+body:has(.status[data-browser="true"]) :is(.when-kodi, .segmented) { display: none; }
+.browser-pages .folders { margin-top: 6px; }
+.browser-back { margin-top: 22px; }
+.browser-launch .play-button { margin-top: 18px; padding: 0 22px; }
+
 /* Off state */
 
 .off-card {
@@ -336,8 +409,9 @@ svg { width: 24px; height: 24px; display: block; flex: none; }
 .off-hint { margin: 0; font-size: 15px; color: var(--label-2); }
 
 .when-busy { display: none; }
-.htmx-request .when-busy { display: inline; }
-.htmx-request .when-idle { display: none; }
+/* Only the button or form being sent: the status card is mid-request every 2 s as it polls. */
+:is(button, form).htmx-request .when-busy { display: inline; }
+:is(button, form).htmx-request .when-idle { display: none; }
 
 /* ── The remote: clickpad + keys, laid out like the Siri Remote ── */
 
@@ -489,9 +563,10 @@ svg { width: 24px; height: 24px; display: block; flex: none; }
 /* ── Library ── */
 
 .library {
+  --gutter: 20px;
   box-sizing: border-box;
   max-width: 1400px;
-  padding: calc(var(--safe-t) + 14px) 20px var(--tabbar-space);
+  padding: calc(var(--safe-t) + 14px) var(--gutter) var(--tabbar-space);
 }
 
 .library-head h1 {
@@ -628,8 +703,8 @@ svg { width: 24px; height: 24px; display: block; flex: none; }
   background: rgba(118, 118, 128, 0.24);
 }
 .segmented button {
-  flex: 1;
-  padding: 7px 8px;
+  flex: 1 1 auto; /* five segments: size to the label so "TV Shows" fits on a phone */
+  padding: 7px 6px;
   white-space: nowrap;
   border-radius: 8px;
   font-size: 14px;
@@ -642,6 +717,37 @@ svg { width: 24px; height: 24px; display: block; flex: none; }
   background: #636366;
   box-shadow: 0 3px 8px rgba(0, 0, 0, 0.3), inset 0 0.5px 0 rgba(255, 255, 255, 0.15);
 }
+
+/* ── Home: rows that scroll sideways, edge to edge, like Kodi's home screen ── */
+
+.shelf + .shelf { margin-top: 30px; }
+.shelf-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 12px;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+.shelf-source { font-size: 13px; font-weight: 600; letter-spacing: 0; color: var(--label-2); }
+.shelf-row {
+  list-style: none;
+  margin: 0 calc(var(--gutter) * -1);
+  padding: 0 var(--gutter) 6px;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: min(200px, 62vw);
+  gap: 14px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scroll-snap-type: x mandatory;
+  scroll-padding-inline: var(--gutter);
+  scrollbar-width: none;
+}
+.shelf-row::-webkit-scrollbar { display: none; }
+.shelf-row > li { scroll-snap-align: start; }
+.skeleton-wide { aspect-ratio: 16 / 9; }
 
 /* ── Show page ── */
 
@@ -967,6 +1073,7 @@ dialog.sheet[open]::backdrop { background: rgba(0, 0, 0, 0.5); }
   transition: transform 0.12s var(--ease-out), background 0.12s;
 }
 .stepper button:active { transform: scale(0.95); background: rgba(255, 255, 255, 0.22); }
+.stepper button[aria-pressed="true"] { color: #000; background: #fff; }
 
 /* Type text */
 
@@ -1053,6 +1160,9 @@ dialog.sheet[open]::backdrop { background: rgba(0, 0, 0, 0.5); }
 .alert-danger { color: #fff; background: var(--red); }
 .alert-danger.htmx-request { opacity: 0.7; }
 .alert-cancel { margin-top: 8px; background: var(--fill-strong); }
+.alert-first { margin: 0 0 8px; }
+.browser-only { display: none; }
+body:has(.status[data-browser="true"]) .browser-only { display: block; }
 .alert-danger:active, .alert-cancel:active { transform: scale(0.98); }
 
 /* ── HUD + toast ── */
@@ -1145,7 +1255,8 @@ dialog.sheet[open]::backdrop { background: rgba(0, 0, 0, 0.5); }
   }
   .volume { flex-direction: column; }
 
-  .library { padding: 40px 48px 120px; }
+  .library { --gutter: 48px; padding: 40px var(--gutter) 120px; }
+  .shelf-row { grid-auto-columns: 260px; gap: 20px; }
   .library-head h1 { margin-top: 0; }
   .grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 34px 26px; }
   .card-title { font-size: 15px; }
@@ -1162,7 +1273,8 @@ dialog.sheet[open]::backdrop { background: rgba(0, 0, 0, 0.5); }
   .episodes { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 8px 18px; }
   .episode-thumb { width: 160px; }
 
-  .link { display: none; }
+  /* "Browse movies" and the like switch views, and here every view is already on screen. */
+  .link[data-view-link] { display: none; }
 
   /* The remote is always on screen here, so the bar only switches the pane, centred under it. */
   .tabbar { left: calc(420px + (100vw - 420px) / 2); }
@@ -1188,6 +1300,54 @@ dialog.sheet[open]::backdrop { background: rgba(0, 0, 0, 0.5); }
   dialog.sheet-alert { width: 360px; padding: 28px 24px 20px; }
 }
 
+/* Laptop in Apple TV mode: the remote alone, bigger. At a desk it's the trackpad, keys and
+   keyboard that get used; the Apple TV and Search panes are shortcuts made for the phone. */
+@media (min-width: 900px) {
+  body:has(.status[data-browser="true"]) {
+    --key: 76px;
+    --pad: min(640px, calc(100vw - 120px));
+  }
+  .app:has(.status[data-browser="true"]) { grid-template-columns: 1fr; }
+  body:has(.status[data-browser="true"]) :is(.library, .tabbar) { display: none; }
+  .app:has(.status[data-browser="true"]) .device {
+    position: static;
+    width: calc(var(--pad) + 2 * 28px);
+    max-width: none;
+    height: auto;
+    min-height: 100dvh;
+    margin: 0 auto;
+    padding: 40px 28px;
+    overflow: visible;
+    background: none;
+    box-shadow: none;
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  .app:has(.status[data-browser="true"]) .status-device { font-size: 32px; }
+  .app:has(.status[data-browser="true"]) .browser-bar { font-size: 17px; }
+  .app:has(.status[data-browser="true"]) .browser-bar p { font-size: 17px; }
+  .app:has(.status[data-browser="true"]) .chip { width: 52px; height: 52px; }
+  .app:has(.status[data-browser="true"]) .chip svg { width: 26px; height: 26px; }
+  .app:has(.status[data-browser="true"]) .remote { padding: 0; background: none; box-shadow: none; }
+  .app:has(.status[data-browser="true"]) .pad {
+    width: var(--pad);
+    aspect-ratio: 16 / 10;
+    border-radius: 30px;
+  }
+  .app:has(.status[data-browser="true"]) .pad-hint { font-size: 15px; }
+  /* The phone's two rows, spread across the trackpad's width. */
+  .app:has(.status[data-browser="true"]) .keys {
+    width: var(--pad);
+    grid-template-columns: repeat(3, var(--key));
+    grid-template-areas:
+      "back home mute"
+      "play vol vol";
+    column-gap: 0;
+  }
+  .app:has(.status[data-browser="true"]) .volume { flex-direction: row-reverse; }
+  .app:has(.status[data-browser="true"]) :is(.key svg, .volume button svg) { width: 36px; height: 36px; }
+}
+
 @media (max-width: 899px) {
   .app:is([data-view="library"], [data-view="search"]) .device,
   .app[data-view="remote"] .library { display: none; }
@@ -1204,6 +1364,14 @@ dialog.sheet[open]::backdrop { background: rgba(0, 0, 0, 0.5); }
   .pad {
     width: min(300px, 80cqw, calc(100cqh - 2 * var(--key) - var(--keys-gap) - var(--remote-gap)));
     min-width: 150px;
+  }
+  /* A trackpad wants area, not a round clickpad: as wide as the screen allows, a little wider
+     than tall, using the height the shorter status card frees up. */
+  .app:has(.status[data-browser="true"]) .pad {
+    width: 100cqw;
+    height: min(440px, calc(100cqh - 2 * var(--key) - var(--keys-gap) - var(--remote-gap)));
+    aspect-ratio: auto;
+    border-radius: 24px;
   }
 }
 

@@ -1,5 +1,6 @@
-<div class="show">
-  <button class="back-link" hx-get="shows" hx-target="#media"><svg><use href="#i-back"/></svg>TV Shows</button>
+{#- On the page trail (see app.js), so Back returns to Home when the show was opened there. -#}
+<div class="show" data-addon-url="shows/{{ id }}">
+  <button class="back-link" data-addon-back="shows"><svg><use href="#i-back"/></svg>Back</button>
 
   <section class="show-hero">
     {% if let Some(src) = backdrop %}<img class="show-backdrop" src="{{ src }}" alt="">{% endif %}

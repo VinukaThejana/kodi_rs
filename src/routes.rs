@@ -18,12 +18,15 @@ use tokio::process::Command;
 
 use crate::{
     bluetooth::{Address, Bluetooth, BluetoothError},
+    browser::{self, BrowserError, Button, Input, Key, Page, Site},
     kodi::{self, Kodi, KodiError, NavKey, Subtitle, Volume, VolumeStep},
     link::{Link, Start},
     listen::{self, Listen, ListenError},
+    mpris::{Mpris, MprisError},
+    sound::{self, SoundError},
     views::{
-        AddonPage, AudioSheet, Choice, IndexPage, MovieCard, MoviesFragment, SearchPage, Service, ShowCard, ShowPage,
-        ShowsFragment, Status, StatusFragment, tmdb_search_path,
+        AddonPage, AudioSheet, BrowserPage, BrowserSearch, Choice, HomePage, IndexPage, MovieCard, MoviesFragment, Row, RowFragment, SearchPage,
+        Service, ShowCard, ShowPage, ShowsFragment, Status, StatusFragment, tmdb_search_path,
     },
 };
 
@@ -34,12 +37,16 @@ pub struct AppState {
     pub kodi: Kodi,
     pub listen: Listen,
     pub bluetooth: Bluetooth,
+    pub input: Input,
+    pub mpris: Mpris,
 }
 
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/status", get(status))
+        .route("/home", get(home))
+        .route("/home/{row}", get(home_row))
         .route("/movies", get(movies))
         .route("/movies/{id}/play", post(play_movie))
         .route("/shows", get(shows))
@@ -66,7 +73,18 @@ pub fn router(state: AppState) -> Router {
         .route("/listen/offer", post(listen_offer))
         .route("/listen/state", get(listen_state))
         .route("/listen/sync", post(listen_sync))
+        .route("/listen/sync/auto", post(listen_sync_auto))
+        .route("/listen/delay", post(listen_delay))
         .route("/debug/webrtc", post(debug_webrtc))
+        .route("/browser/art", get(browser_art))
+        .route("/browser/search", get(browser_search))
+        .route("/browser/go", post(browser_go))
+        .route("/browser/{site}", get(browser_page))
+        .route("/browser/open", post(open_browser))
+        .route("/browser/close", post(close_browser))
+        .route("/browser/move", post(pointer_move))
+        .route("/browser/scroll", post(pointer_scroll))
+        .route("/browser/click", post(pointer_click))
         .route("/kodi/launch", post(launch))
         .route("/kodi/quit", post(quit))
         .route("/art", get(art))
@@ -100,6 +118,12 @@ pub enum AppError {
     Listen(ListenError),
     #[error(transparent)]
     Bluetooth(#[from] BluetoothError),
+    #[error(transparent)]
+    Browser(#[from] BrowserError),
+    #[error(transparent)]
+    Mpris(#[from] MprisError),
+    #[error(transparent)]
+    Sound(#[from] SoundError),
     #[error("not a path in the {0} add-on")]
     ForeignPath(&'static str),
     #[error("That isn't a YouTube link or a direct video link")]
@@ -123,6 +147,9 @@ impl IntoResponse for AppError {
                 StatusCode::BAD_REQUEST
             }
             Self::Bluetooth(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Browser(_) => StatusCode::SERVICE_UNAVAILABLE,
+            Self::Mpris(MprisError::NoPlayer) => StatusCode::BAD_REQUEST,
+            Self::Mpris(_) | Self::Sound(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Kodi(KodiError::Slow) => StatusCode::GATEWAY_TIMEOUT,
             Self::Kodi(_) => StatusCode::BAD_GATEWAY,
             Self::Render(_) | Self::Launch(_) => StatusCode::INTERNAL_SERVER_ERROR,
@@ -154,12 +181,26 @@ fn volume_hud(v: Volume) -> impl IntoResponse {
     (StatusCode::NO_CONTENT, [("HX-Trigger", trigger.to_string())])
 }
 
-async fn index(State(kodi): State<Kodi>) -> Result<Html<String>> {
-    render(IndexPage { status: Status::load(&kodi).await })
+async fn index(State(app): State<AppState>) -> Result<Html<String>> {
+    render(IndexPage { status: Status::load(&app.kodi, &app.mpris).await })
 }
 
-async fn status(State(kodi): State<Kodi>) -> Result<Html<String>> {
-    render(StatusFragment { status: Status::load(&kodi).await })
+async fn status(State(app): State<AppState>) -> Result<Html<String>> {
+    render(StatusFragment { status: Status::load(&app.kodi, &app.mpris).await })
+}
+
+async fn home(State(kodi): State<Kodi>) -> Result<Html<String>> {
+    render(HomePage { online: kodi.is_online().await, rows: &Row::ALL })
+}
+
+/// One Home row. A row that fails renders empty like one with nothing in it, so it drops off
+/// Home instead of leaving its placeholder spinning.
+async fn home_row(State(kodi): State<Kodi>, Path(row): Path<Row>) -> Result<Html<String>> {
+    let items = row.load(&kodi).await.unwrap_or_else(|e| {
+        tracing::warn!("home row {}: {e}", row.slug());
+        vec![]
+    });
+    render(RowFragment { row, items })
 }
 
 async fn movies(State(kodi): State<Kodi>) -> Result<Html<String>> {
@@ -276,7 +317,20 @@ async fn play_link(State(kodi): State<Kodi>, Form(f): Form<LinkForm>) -> Result<
     Ok((StatusCode::NO_CONTENT, [("HX-Trigger", trigger.to_string())]))
 }
 
-async fn nav(State(kodi): State<Kodi>, Path(key): Path<NavKey>) -> Result<impl IntoResponse> {
+async fn nav(State(app): State<AppState>, Path(key): Path<NavKey>) -> Result<impl IntoResponse> {
+    if browser::is_open().await {
+        match key {
+            NavKey::Up => app.input.press(Key::Up)?,
+            NavKey::Down => app.input.press(Key::Down)?,
+            NavKey::Left => app.input.press(Key::Left)?,
+            NavKey::Right => app.input.press(Key::Right)?,
+            NavKey::Select => app.input.press(Key::Enter)?,
+            NavKey::Back => app.input.press(Key::Back)?,
+            NavKey::Home => app.input.navigate(&Page::Home.url(None))?,
+        }
+        return Ok(refreshed());
+    }
+    let kodi = app.kodi;
     kodi.nav(key).await?;
     Ok(refreshed())
 }
@@ -289,18 +343,40 @@ struct TextForm {
 
 /// Sent on every keystroke (`done=false`, mirrored live on the TV) and once on submit.
 /// Plain `204`: typing doesn't change playback, so there's no need to re-poll the status card.
-async fn send_text(State(kodi): State<Kodi>, Form(f): Form<TextForm>) -> Result<StatusCode> {
-    kodi.send_text(&f.text, f.done).await?;
+/// The browser can't have its text replaced, so it only gets the submitted text, then Enter.
+async fn send_text(State(app): State<AppState>, Form(f): Form<TextForm>) -> Result<StatusCode> {
+    if browser::is_open().await {
+        if f.done {
+            app.input.type_text(&f.text)?;
+            app.input.press(Key::Enter)?;
+        }
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    app.kodi.send_text(&f.text, f.done).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn play_pause(State(kodi): State<Kodi>) -> Result<impl IntoResponse> {
+/// In the browser: the page's media session over MPRIS, or Space when it has none (a page
+/// whose player hasn't started).
+async fn play_pause(State(app): State<AppState>) -> Result<impl IntoResponse> {
+    if browser::is_open().await {
+        match app.mpris.play_pause().await {
+            Err(MprisError::NoPlayer) => app.input.press(Key::Space)?,
+            other => other?,
+        }
+        return Ok(refreshed());
+    }
+    let kodi = app.kodi;
     kodi.play_pause().await?;
     Ok(refreshed())
 }
 
-async fn stop(State(kodi): State<Kodi>) -> Result<impl IntoResponse> {
-    kodi.stop().await?;
+async fn stop(State(app): State<AppState>) -> Result<impl IntoResponse> {
+    if browser::is_open().await {
+        app.mpris.stop().await?;
+        return Ok(refreshed());
+    }
+    app.kodi.stop().await?;
     Ok(refreshed())
 }
 
@@ -322,8 +398,12 @@ struct SkipForm {
     seconds: Seconds,
 }
 
-async fn skip(State(kodi): State<Kodi>, Form(f): Form<SkipForm>) -> Result<impl IntoResponse> {
-    kodi.skip(f.seconds.0).await?;
+async fn skip(State(app): State<AppState>, Form(f): Form<SkipForm>) -> Result<impl IntoResponse> {
+    if browser::is_open().await {
+        app.mpris.skip(f.seconds.0).await?;
+        return Ok(refreshed());
+    }
+    app.kodi.skip(f.seconds.0).await?;
     Ok(refreshed())
 }
 
@@ -344,16 +424,26 @@ struct SeekForm {
     percent: Percent,
 }
 
-async fn seek(State(kodi): State<Kodi>, Form(f): Form<SeekForm>) -> Result<impl IntoResponse> {
-    kodi.seek_to(f.percent.0).await?;
+async fn seek(State(app): State<AppState>, Form(f): Form<SeekForm>) -> Result<impl IntoResponse> {
+    if browser::is_open().await {
+        app.mpris.seek_to(f.percent.0).await?;
+        return Ok(refreshed());
+    }
+    app.kodi.seek_to(f.percent.0).await?;
     Ok(refreshed())
 }
 
 async fn volume(State(kodi): State<Kodi>, Path(step): Path<VolumeStep>) -> Result<impl IntoResponse> {
+    if browser::is_open().await {
+        return Ok(volume_hud(browser::step_volume(step).await?));
+    }
     Ok(volume_hud(kodi.step_volume(step).await?))
 }
 
 async fn mute(State(kodi): State<Kodi>) -> Result<impl IntoResponse> {
+    if browser::is_open().await {
+        return Ok(volume_hud(browser::toggle_mute().await?));
+    }
     Ok(volume_hud(kodi.toggle_mute().await?))
 }
 
@@ -367,7 +457,10 @@ async fn load_sheet(app: &AppState) -> Result<AudioSheet> {
         tracing::debug!("listing Bluetooth headphones: {e}");
         vec![]
     });
-    Ok(AudioSheet::load(&app.kodi, app.listen.sync_earlier_ms(), headphones).await?)
+    if browser::is_open().await {
+        return Ok(AudioSheet::load_browser(headphones).await?);
+    }
+    Ok(AudioSheet::load(&app.kodi, app.listen.sync_earlier_ms(), app.listen.sync_auto(), headphones).await?)
 }
 
 #[derive(Deserialize)]
@@ -421,7 +514,12 @@ struct OutputForm {
     value: String,
 }
 
+/// Kodi's output, or in the browser the system's default output, which Chrome plays to.
 async fn set_output(State(app): State<AppState>, Form(f): Form<OutputForm>) -> Result<Html<String>> {
+    if browser::is_open().await {
+        sound::set_output(&f.value).await?;
+        return sheet_once(&app, |s| is_selected(&s.outputs, &f.value)).await;
+    }
     app.kodi.set_audio_output(&f.value).await?;
     // Picking "System Default" must cancel switching back to headphones; see `switch_back`.
     app.bluetooth.remember_choice(&f.value);
@@ -438,11 +536,34 @@ struct HeadphonesForm {
 /// (see [`Bluetooth::switch_back`]).
 async fn connect_headphones(State(app): State<AppState>, Form(f): Form<HeadphonesForm>) -> Result<Html<String>> {
     let name = app.bluetooth.connect(&f.address).await?;
+    if browser::is_open().await {
+        let Some(output) = wait_for_system_output(&f.address, Duration::from_secs(10)).await? else {
+            return Err(BluetoothError::NoOutput(name).into());
+        };
+        sound::set_output(&output).await?;
+        return sheet_once(&app, |s| is_selected(&s.outputs, &output)).await;
+    }
     let Some(output) = wait_for_output(&app.kodi, &f.address, Duration::from_secs(10)).await? else {
         return Err(BluetoothError::NotInKodi(name).into());
     };
     app.kodi.set_audio_output(&output).await?;
     sheet_once(&app, |s| is_selected(&s.outputs, &output)).await
+}
+
+/// [`wait_for_output`] for the system's outputs, which browser mode uses.
+async fn wait_for_system_output(address: &Address, timeout: Duration) -> Result<Option<String>> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let outputs = sound::outputs().await?;
+        let found = outputs.options.iter().filter_map(|o| o.value.as_str()).find(|v| address.is_output(v));
+        if let Some(device) = found {
+            return Ok(Some(device.to_owned()));
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Ok(None);
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
 }
 
 /// Polls Kodi's output list until the headphones' sink shows up (PipeWire adds it a moment
@@ -464,6 +585,10 @@ async fn wait_for_output(kodi: &Kodi, address: &Address, timeout: Duration) -> R
 
 /// Routes Kodi's sound into the stream; the page connects to it via [`listen_offer`].
 async fn listen_start(State(app): State<AppState>) -> Result<Html<String>> {
+    if browser::is_open().await {
+        app.listen.start_system().await?;
+        return sheet_once(&app, |s| s.listening).await;
+    }
     app.listen.start(&app.kodi).await?;
     sheet_once(&app, |s| s.listening).await
 }
@@ -496,9 +621,27 @@ async fn listen_sync(State(app): State<AppState>, Form(f): Form<SyncForm>) -> Re
     render(load_sheet(&app).await?)
 }
 
+/// Hands Sync back to auto: it follows the listener's measured delay again.
+async fn listen_sync_auto(State(app): State<AppState>) -> Result<Html<String>> {
+    app.listen.set_sync_auto(true);
+    render(load_sheet(&app).await?)
+}
+
+#[derive(Deserialize)]
+struct DelayForm {
+    ms: i32,
+}
+
+/// The listening browser's measured delay, every few seconds (app.js), for auto sync.
+async fn listen_delay(State(listen): State<Listen>, Form(f): Form<DelayForm>) -> StatusCode {
+    listen.report_delay(f.ms);
+    StatusCode::NO_CONTENT
+}
+
 /// `"true"` while Kodi plays into the stream, so a reloaded page knows whether to resume.
 async fn listen_state(State(kodi): State<Kodi>) -> Result<&'static str> {
-    let streaming = listen::is_stream_device(&kodi.audio_output().await?);
+    let current = if browser::is_open().await { sound::outputs().await?.current } else { kodi.audio_output().await? };
+    let streaming = listen::is_stream_device(&current);
     Ok(if streaming { "true" } else { "false" })
 }
 
@@ -518,7 +661,7 @@ async fn listen_offer(State(listen): State<Listen>, offer: String) -> Result<Str
 ///
 /// Refuses when a Kodi process already exists: a second instance can't get the screen or
 /// the API port, and would only leave a hidden copy for the remote to talk to. Runs `kodi`
-/// rather than `kodi-standalone`, whose crash-restart loop revives Kodi without GPU access.
+/// rather than `kodi-standalone` (see [`kodi::LAUNCH`]).
 async fn launch(State(kodi): State<Kodi>) -> Result<impl IntoResponse> {
     if !kodi.is_online().await {
         if kodi::process_running().await {
@@ -527,7 +670,8 @@ async fn launch(State(kodi): State<Kodi>) -> Result<impl IntoResponse> {
             ));
         }
         let out = Command::new("systemd-run")
-            .args(["--user", "--unit=kodi", "--collect", "--quiet", "kodi", "--standalone", "--windowing=gbm"])
+            .args(["--user", "--unit=kodi", "--collect", "--quiet"])
+            .args(kodi::LAUNCH)
             .output()
             .await
             .map_err(|e| AppError::Launch(format!("couldn't start Kodi: {e}")))?;
@@ -542,10 +686,121 @@ async fn launch(State(kodi): State<Kodi>) -> Result<impl IntoResponse> {
     Ok((StatusCode::NO_CONTENT, [("HX-Trigger", "refresh, launched")]))
 }
 
+/// Turns the TV app off: Kodi, or the browser without bringing Kodi back.
 async fn quit(State(kodi): State<Kodi>) -> Result<impl IntoResponse> {
+    if browser::is_open().await {
+        browser::close(true).await?;
+        return Ok(refreshed());
+    }
     kodi.quit().await?;
     wait_until(&kodi, false, Duration::from_secs(8)).await;
     Ok(refreshed())
+}
+
+/// The artwork of what the browser plays: a file Chrome wrote for its media session.
+async fn browser_art(State(mpris): State<Mpris>) -> Result<Response> {
+    let Some(path) = mpris.art_file().await? else { return Ok(StatusCode::NOT_FOUND.into_response()) };
+    let Ok(bytes) = tokio::fs::read(&path).await else { return Ok(StatusCode::NOT_FOUND.into_response()) };
+    let content_type = sniff_image(&bytes).unwrap_or("application/octet-stream");
+    // The URL carries a version (?v=) that changes with the artwork, so it can be cached.
+    Ok(([(header::CONTENT_TYPE, content_type), (header::CACHE_CONTROL, "public, max-age=86400")], bytes).into_response())
+}
+
+/// The Search tab while the browser is open: a field that searches Apple TV on the TV.
+async fn browser_search() -> Result<Html<String>> {
+    render(BrowserSearch { site: Site::AppleTv })
+}
+
+#[derive(Deserialize)]
+struct GoForm {
+    page: Page,
+    term: Option<String>,
+}
+
+/// Opens one of Apple TV's pages in the browser (a search, with `term`).
+async fn browser_go(State(input): State<Input>, Form(f): Form<GoForm>) -> Result<impl IntoResponse> {
+    input.navigate(&f.page.url(f.term.as_deref()))?;
+    Ok(refreshed())
+}
+
+/// The Apple TV segment of the library, and the Library tab while the browser is open: open
+/// Apple TV, or once it's open, jump to its pages.
+async fn browser_page(Path(site): Path<Site>) -> Result<Html<String>> {
+    render(BrowserPage { site, open: browser::is_open().await })
+}
+
+#[derive(Deserialize)]
+struct SiteForm {
+    site: Site,
+}
+
+/// Closes Kodi and opens `site` full screen on the TV in its place.
+async fn open_browser(State(kodi): State<Kodi>, Form(f): Form<SiteForm>) -> Result<impl IntoResponse> {
+    if !browser::is_open().await {
+        close_kodi(&kodi).await?;
+        browser::open(f.site).await?;
+    }
+    Ok(refreshed())
+}
+
+/// Closes the browser; its unit starts Kodi again, which this waits for like `/kodi/launch`.
+async fn close_browser(State(kodi): State<Kodi>) -> Result<impl IntoResponse> {
+    browser::close(false).await?;
+    if !wait_until(&kodi, true, Duration::from_secs(25)).await {
+        return Err(AppError::Launch("Kodi didn't come back within 25 seconds".into()));
+    }
+    Ok((StatusCode::NO_CONTENT, [("HX-Trigger", "refresh, launched")]))
+}
+
+/// Quits Kodi and waits for its process to go, since the browser needs the screen. Kodi can
+/// hang at "Stopping all" on add-on threads after it has saved its settings; then its unit is
+/// stopped.
+async fn close_kodi(kodi: &Kodi) -> Result<()> {
+    if kodi.is_online().await {
+        kodi.quit().await?;
+    }
+    let gone = || async {
+        while kodi::process_running().await {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+        }
+    };
+    if tokio::time::timeout(Duration::from_secs(12), gone()).await.is_err() {
+        tracing::warn!("Kodi didn't exit; stopping its unit");
+        let _ = Command::new("systemctl").args(["--user", "stop", "kodi"]).status().await;
+        if tokio::time::timeout(Duration::from_secs(5), gone()).await.is_err() {
+            return Err(AppError::Launch("Kodi is still running on the TV, so the browser can't open".into()));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct PointerForm {
+    dx: i32,
+    dy: i32,
+}
+
+/// Moves the browser's pointer by `dx`, `dy` pixels. Sent many times a second while a finger
+/// drags on the pad, so it answers a bare `204` without re-polling the status card.
+async fn pointer_move(State(input): State<Input>, Form(f): Form<PointerForm>) -> Result<StatusCode> {
+    input.move_by(f.dx.clamp(-400, 400), f.dy.clamp(-400, 400))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Scrolls the page by `dx`, `dy` in wheel units (120 per notch); positive `dy` scrolls up.
+async fn pointer_scroll(State(input): State<Input>, Form(f): Form<PointerForm>) -> Result<StatusCode> {
+    input.scroll(f.dx.clamp(-2400, 2400), f.dy.clamp(-2400, 2400))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct ClickForm {
+    button: Button,
+}
+
+async fn pointer_click(State(input): State<Input>, Form(f): Form<ClickForm>) -> Result<StatusCode> {
+    input.click(f.button)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Polls until Kodi's online state matches `online`; returns whether it did before `timeout`.

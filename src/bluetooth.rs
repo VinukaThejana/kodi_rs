@@ -88,6 +88,9 @@ pub enum BluetoothError {
     /// when it starts.
     #[error("{0} connected, but Kodi doesn't list them yet. Restart Kodi and try again.")]
     NotInKodi(String),
+    /// Browser mode's [`BluetoothError::NotInKodi`]: PipeWire didn't add their output in time.
+    #[error("{0} connected, but no sound output appeared for them. Try again in a moment.")]
+    NoOutput(String),
     #[error(transparent)]
     Bus(#[from] zbus::Error),
 }

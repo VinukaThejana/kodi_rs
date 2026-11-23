@@ -1,0 +1,10 @@
+{% if !items.is_empty() %}
+<section class="shelf">
+  <h2 class="shelf-title">{{ row.title() }}{% if row.is_netflix() %}<span class="shelf-source">Netflix</span>{% endif %}</h2>
+  <ul class="shelf-row">
+    {% for t in items %}
+    {% include "title-card.html" %}
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}

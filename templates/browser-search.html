@@ -1,0 +1,11 @@
+{#- The Search tab while the browser is open. Choosing the tab opens the site's search on the TV
+    (app.js); this field fills it in, and the results are picked on the TV with the pad. -#}
+<div class="addon">
+  <form class="search-bar" role="search" hx-post="browser/go" hx-vals='{"page": "search"}'
+        data-on-tv="Searching {{ site.name() }} on the TV">
+    <svg><use href="#i-search"/></svg>
+    <input name="term" type="search" placeholder="Search {{ site.name() }}" aria-label="Search {{ site.name() }} on the TV"
+           enterkeyhint="search" autocomplete="off" autocapitalize="off" spellcheck="false" autofocus>
+  </form>
+  <p class="search-note">The results show on the TV; pick one with the pad.</p>
+</div>

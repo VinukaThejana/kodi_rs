@@ -1,0 +1,33 @@
+{#- The library's Apple TV segment, and the Library tab while the browser is open. Apple's
+    licence server refuses Kodi's Widevine, so Apple TV+ plays in Chrome on the TV instead (see
+    browser.rs). data-on-tv switches to the remote and says what happened. -#}
+{% if open %}
+<div class="addon browser-pages">
+  <p class="search-note">{{ site.name() }} is open on the TV. Jump to a page, then pick with the pad.</p>
+  <ul class="folders">
+    <li>
+      <button class="folder" hx-post="browser/go" hx-vals='{"page": "home"}' data-on-tv="Opening {{ site.name() }}'s home on the TV">
+        <span>Home</span><svg><use href="#i-back"/></svg>
+      </button>
+    </li>
+    <li>
+      <button class="folder" hx-post="browser/go" hx-vals='{"page": "search"}' data-on-tv="Opening the search on the TV">
+        <span>Search</span><svg><use href="#i-back"/></svg>
+      </button>
+    </li>
+  </ul>
+  <button class="link browser-back" hx-post="browser/close" hx-disabled-elt="this">
+    <span class="when-idle">Back to Kodi</span><span class="when-busy">Starting Kodi…</span>
+  </button>
+</div>
+{% else %}
+<div class="empty browser-launch">
+  <svg><use href="#i-tv"/></svg>
+  <p>{{ site.name() }} plays in the browser</p>
+  <span>Kodi closes and {{ site.name() }} opens full screen on the TV. Close it from the remote to come back to Kodi.</span>
+  <button class="play-button" hx-post="browser/open" hx-vals='{"site": "apple-tv"}' hx-disabled-elt="this"
+          data-on-tv="Opening {{ site.name() }} on the TV">
+    <span class="when-idle">Open {{ site.name() }}</span><span class="when-busy">Opening…</span>
+  </button>
+</div>
+{% endif %}

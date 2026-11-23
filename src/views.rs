@@ -3,9 +3,12 @@
 use askama::Template;
 
 use crate::bluetooth::Headphones;
+use crate::browser::{self, Site};
+use crate::mpris::{self, Mpris};
+use crate::sound;
 use crate::listen;
 use crate::kodi::{
-    self, AudioOutputs, AudioStream, DirEntry, Episode, FileType, Kodi, KodiError, Movie, Playback, Resume,
+    self, AudioOutputs, AudioStream, DirEntry, Episode, FileType, Kodi, KodiError, Movie, Pick, Playback, Resume,
     SubtitleStream, TvShow, percent_encode,
 };
 
@@ -20,6 +23,144 @@ pub struct IndexPage {
 #[template(path = "status.html")]
 pub struct StatusFragment {
     pub status: Status,
+}
+
+/// The Home segment: the rows of Kodi's home screen, each loading on its own (see [`RowFragment`]).
+/// Its `data-addon-url` starts the page trail, so Back from a show opened here returns here.
+#[derive(Template)]
+#[template(path = "home.html")]
+pub struct HomePage {
+    pub online: bool,
+    pub rows: &'static [Row],
+}
+
+/// One loaded Home row; it renders nothing when the row is empty, which removes it.
+#[derive(Template)]
+#[template(path = "home-row.html")]
+pub struct RowFragment {
+    pub row: Row,
+    pub items: Vec<AddonItem>,
+}
+
+/// A row of Kodi's home screen (Arctic Fuse, as set up on the TV), in the TV's order. The
+/// library rows run the same queries as the skin's smart playlists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Row {
+    ContinueWatching,
+    OnDeck,
+    InProgress,
+    MyList,
+    TrendingNow,
+    RecentlyAdded,
+    NewMovies,
+    NewShows,
+    RecentShows,
+}
+
+impl Row {
+    pub const ALL: [Self; 9] = [
+        Self::ContinueWatching,
+        Self::OnDeck,
+        Self::InProgress,
+        Self::MyList,
+        Self::TrendingNow,
+        Self::RecentlyAdded,
+        Self::NewMovies,
+        Self::NewShows,
+        Self::RecentShows,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::ContinueWatching => "Continue Watching",
+            Self::OnDeck => "On Deck",
+            Self::InProgress => "In-Progress",
+            Self::MyList => "My List",
+            Self::TrendingNow => "Trending Now",
+            Self::RecentlyAdded => "Recently Added",
+            Self::NewMovies => "New Movies",
+            Self::NewShows => "New Shows",
+            Self::RecentShows => "Recent Shows",
+        }
+    }
+
+    /// The `/home/{slug}` URL segment; matches the serde name.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::ContinueWatching => "continue-watching",
+            Self::OnDeck => "on-deck",
+            Self::InProgress => "in-progress",
+            Self::MyList => "my-list",
+            Self::TrendingNow => "trending-now",
+            Self::RecentlyAdded => "recently-added",
+            Self::NewMovies => "new-movies",
+            Self::NewShows => "new-shows",
+            Self::RecentShows => "recent-shows",
+        }
+    }
+
+    pub fn is_netflix(self) -> bool {
+        matches!(self, Self::ContinueWatching | Self::MyList | Self::TrendingNow | Self::RecentlyAdded)
+    }
+
+    pub async fn load(self, kodi: &Kodi) -> Result<Vec<AddonItem>, KodiError> {
+        Ok(match self {
+            Self::ContinueWatching => netflix_row(kodi, "video_list/continueWatching/continueWatching/").await?,
+            Self::OnDeck => cards(kodi.picked_movies(Pick::InProgress).await?),
+            Self::InProgress => cards(kodi.picked_episodes(Pick::InProgress).await?),
+            Self::MyList => netflix_row(kodi, "video_list_sorted/myList/queue/").await?,
+            Self::TrendingNow => netflix_row(kodi, "video_list/currentTitles/trendingNow/").await?,
+            Self::RecentlyAdded => netflix_row(kodi, "video_list_sorted/recentlyAdded/1592210/").await?,
+            Self::NewMovies => cards(kodi.picked_movies(Pick::Unwatched).await?),
+            Self::NewShows => cards(kodi.picked_tv_shows(Pick::Unwatched).await?),
+            Self::RecentShows => cards(kodi.picked_tv_shows(Pick::RecentlyPlayed).await?),
+        })
+    }
+}
+
+fn cards<T>(items: Vec<T>) -> Vec<AddonItem>
+where
+    AddonItem: From<T>,
+{
+    items.into_iter().map(AddonItem::from).collect()
+}
+
+/// One of the Netflix add-on's lists (`list` is its path under `directory/`). Netflix only has
+/// the lists on the profile's home page that day, and asking for a missing one pops an error
+/// on the TV, so this checks the home page first and returns nothing if the list isn't there.
+async fn netflix_row(kodi: &Kodi, list: &str) -> Result<Vec<AddonItem>, KodiError> {
+    let path = format!("plugin://plugin.video.netflix/directory/{list}");
+    let home = kodi.directory(Service::Netflix.home()).await?;
+    if !home.iter().any(|e| e.file == path) {
+        return Ok(vec![]);
+    }
+    Ok(netflix_cards(kodi.directory(&path).await?))
+}
+
+/// The titles of a Netflix list, without its menu entries ("Next page" and the like).
+fn netflix_cards(entries: Vec<DirEntry>) -> Vec<AddonItem> {
+    entries
+        .into_iter()
+        .filter(|e| e.filetype == FileType::File || e.kind == "tvshow")
+        .map(|e| AddonItem::new(Service::Netflix, e))
+        .collect()
+}
+
+/// The library's Apple TV segment: Apple TV+ plays in a browser on the TV, not in Kodi.
+#[derive(Template)]
+#[template(path = "browser.html")]
+pub struct BrowserPage {
+    pub site: Site,
+    /// The browser is on the TV already.
+    pub open: bool,
+}
+
+/// The Search tab while the browser is open (see `routes::browser_search`).
+#[derive(Template)]
+#[template(path = "browser-search.html")]
+pub struct BrowserSearch {
+    pub site: Site,
 }
 
 #[derive(Template)]
@@ -40,6 +181,7 @@ pub struct ShowsFragment {
 #[derive(Template)]
 #[template(path = "show.html")]
 pub struct ShowPage {
+    pub id: i64,
     pub title: String,
     pub detail: String,
     pub poster: Option<String>,
@@ -50,7 +192,7 @@ pub struct ShowPage {
 
 /// An add-on the remote browses through Kodi, using the add-on's own menus. `Search` is
 /// TMDb Helper, entered only through [`SearchPage`] results: it plays a title from Netflix
-/// if Netflix has it, otherwise from Apple TV (its player files in Kodi's userdata).
+/// using the player files in Kodi's userdata, and fails when Netflix doesn't have it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Service {
@@ -158,6 +300,7 @@ pub struct AddonPage {
     pub folders: Vec<AddonItem>,
 }
 
+/// One card or row: a title, episode or folder from an add-on, or a library item on Home.
 pub struct AddonItem {
     pub title: String,
     /// Year for titles, running time for episodes.
@@ -182,14 +325,22 @@ pub struct AudioSheet {
     pub headphones: Vec<Choice>,
     /// The stream sink exists, so "Listen on this device" can be offered.
     pub can_listen: bool,
-    /// Kodi is playing into the stream sink rather than a speaker.
+    /// Kodi (or in the browser, the whole system) is playing into the stream sink rather than
+    /// a speaker.
     pub listening: bool,
     /// The Sync control's current setting, in words.
     pub sync_label: String,
+    /// Sync follows the measured delay (`Listen::report_delay`) rather than Earlier/Later.
+    pub sync_auto: bool,
+    /// Kodi's sheet rather than the browser's: only Kodi has tracks and the Sync control,
+    /// which sets Kodi's audio delay.
+    pub kodi: bool,
 }
 
 pub struct Status {
     pub online: bool,
+    /// The browser is on the TV in Kodi's place (see `browser`).
+    pub browser: bool,
     /// Kodi is running but its API doesn't answer, so the remote can't control it.
     pub unreachable: bool,
     pub muted: bool,
@@ -261,13 +412,22 @@ pub struct Choice {
 }
 
 impl Status {
-    /// Asks Kodi what it's doing. Any failure other than "offline" is shown as idle.
-    pub async fn load(kodi: &Kodi) -> Self {
+    /// Asks Kodi what it's doing, or while the browser is open, what the browser plays (over
+    /// MPRIS). Any failure other than "offline" is shown as idle.
+    pub async fn load(kodi: &Kodi, mpris: &Mpris) -> Self {
         let playback = match kodi.playback().await {
             Ok(p) => p,
             Err(KodiError::Offline) => {
+                if browser::is_open().await {
+                    let playing = mpris.playing().await.unwrap_or_else(|e| {
+                        tracing::warn!("reading the browser's playback: {e}");
+                        None
+                    });
+                    let now = playing.map(NowPlaying::from_browser);
+                    return Self { online: false, browser: true, unreachable: false, muted: false, now };
+                }
                 let unreachable = kodi::process_running().await;
-                return Self { online: false, unreachable, muted: false, now: None };
+                return Self { online: false, browser: false, unreachable, muted: false, now: None };
             }
             Err(e) => {
                 tracing::warn!("reading playback: {e}");
@@ -275,17 +435,46 @@ impl Status {
             }
         };
         let muted = kodi.volume().await.map(|v| v.muted).unwrap_or(false);
-        Self { online: true, unreachable: false, muted, now: playback.map(NowPlaying::from) }
+        Self { online: true, browser: false, unreachable: false, muted, now: playback.map(NowPlaying::from) }
     }
 
-    /// Value for the `data-state` attribute that CSS keys off.
+    /// Value for the `data-state` attribute that CSS and the media controls key off. In the
+    /// browser it's "playing"/"paused" while the page plays something, else "browser".
     pub fn state(&self) -> &'static str {
+        if self.browser {
+            return match &self.now {
+                None => "browser",
+                Some(n) if n.paused => "paused",
+                Some(_) => "playing",
+            };
+        }
         match (&self.now, self.online) {
             (_, false) if self.unreachable => "unreachable",
             (_, false) => "off",
             (None, true) => "idle",
             (Some(n), true) if n.paused => "paused",
             (Some(_), true) => "playing",
+        }
+    }
+}
+
+impl NowPlaying {
+    /// The browser's media session. Its artwork is a file Chrome writes, served by
+    /// `/browser/art`; the file's name changes with the artwork, so it versions the URL.
+    fn from_browser(p: mpris::Playing) -> Self {
+        let art = p.art_file.as_deref().map(|f| format!("browser/art?v={}", percent_encode(f.rsplit('/').next().unwrap_or(f))));
+        let (elapsed, total) = (p.position as u64, p.duration as u64);
+        Self {
+            poster: art.clone(),
+            backdrop: art,
+            title: p.title,
+            subtitle: p.subtitle,
+            elapsed: clock(elapsed),
+            remaining: format!("-{}", clock(total.saturating_sub(elapsed))),
+            percent: format!("{:.2}", (p.position / p.duration * 100.0).clamp(0.0, 100.0)),
+            position: elapsed.min(total),
+            duration: total,
+            paused: p.paused,
         }
     }
 }
@@ -383,6 +572,7 @@ impl ShowPage {
         }
 
         Self {
+            id: show.tvshowid,
             poster: show.art.get("poster").map(|src| art_url(src)),
             backdrop: show.art.get("fanart").or(show.art.get("landscape")).map(|src| art_url(src)),
             title: show.title,
@@ -511,6 +701,50 @@ impl AddonItem {
     }
 }
 
+/// Home cards are landscape, like the add-ons' (see `title-card.html`).
+fn wide_art(art: &std::collections::HashMap<String, String>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|k| art.get(*k)).map(|src| art_url(src))
+}
+
+impl From<Movie> for AddonItem {
+    fn from(m: Movie) -> Self {
+        Self {
+            href: format!("movies/{}/play", m.movieid),
+            detail: year(m.year),
+            art: wide_art(&m.art, &["landscape", "fanart", "poster"]),
+            progress: resume_percent(m.resume.as_ref()),
+            title: m.title,
+            plays: true,
+        }
+    }
+}
+
+impl From<TvShow> for AddonItem {
+    fn from(s: TvShow) -> Self {
+        Self {
+            href: format!("shows/{}", s.tvshowid),
+            detail: year(s.year),
+            art: wide_art(&s.art, &["landscape", "fanart", "poster"]),
+            progress: None,
+            title: s.title,
+            plays: false,
+        }
+    }
+}
+
+impl From<Episode> for AddonItem {
+    fn from(e: Episode) -> Self {
+        Self {
+            href: format!("episodes/{}/play", e.episodeid),
+            detail: format!("S{} · E{}", e.season, e.episode),
+            art: wide_art(&e.art, &["thumb", "tvshow.landscape", "tvshow.fanart"]),
+            progress: resume_percent(e.resume.as_ref()),
+            title: if e.showtitle.is_empty() { e.title } else { e.showtitle },
+            plays: true,
+        }
+    }
+}
+
 /// Watched fraction as a CSS percentage, for items that were started but not finished.
 fn resume_percent(resume: Option<&Resume>) -> Option<String> {
     resume
@@ -535,9 +769,35 @@ impl AudioSheet {
     /// `sync_earlier_ms` is the "Listen on this device" sync adjustment, shown while listening.
     /// `headphones` are the paired Bluetooth audio devices; those Kodi already lists as an
     /// output are left out, so each device appears once.
-    pub async fn load(kodi: &Kodi, sync_earlier_ms: i32, headphones: Vec<Headphones>) -> Result<Self, KodiError> {
+    pub async fn load(
+        kodi: &Kodi,
+        sync_earlier_ms: i32,
+        sync_auto: bool,
+        headphones: Vec<Headphones>,
+    ) -> Result<Self, KodiError> {
         let playback = kodi.playback().await?;
         let audio_outputs = kodi.audio_outputs().await?;
+        let mut sheet = Self::new(playback, audio_outputs, sync_earlier_ms, headphones, true);
+        sheet.sync_auto = sync_auto;
+        if sync_auto {
+            sheet.sync_label = format!("Auto · {}", sheet.sync_label.to_lowercase());
+        }
+        Ok(sheet)
+    }
+
+    /// The browser's sheet: the system's outputs (PipeWire sinks, which Chrome plays to),
+    /// Bluetooth headphones and "This device", without Kodi's tracks or Sync.
+    pub async fn load_browser(headphones: Vec<Headphones>) -> Result<Self, sound::SoundError> {
+        Ok(Self::new(None, sound::outputs().await?, 0, headphones, false))
+    }
+
+    fn new(
+        playback: Option<Playback>,
+        audio_outputs: AudioOutputs,
+        sync_earlier_ms: i32,
+        headphones: Vec<Headphones>,
+        kodi: bool,
+    ) -> Self {
         let can_listen =
             audio_outputs.options.iter().any(|o| o.value.as_str().is_some_and(listen::is_stream_device));
         let listening = listen::is_stream_device(&audio_outputs.current);
@@ -546,7 +806,7 @@ impl AudioSheet {
             .filter(|h| !audio_outputs.options.iter().any(|o| o.value.as_str().is_some_and(|v| h.address.is_output(v))))
             .map(|h| Choice {
                 value: h.address.to_string(),
-                detail: if h.connected { "Connected · not in Kodi yet" } else { "Bluetooth · Not connected" }
+                detail: if h.connected { "Connected · not an output yet" } else { "Bluetooth · Not connected" }
                     .to_owned(),
                 title: h.name,
                 selected: false,
@@ -566,6 +826,8 @@ impl AudioSheet {
                 ms if ms > 0 => format!("Sound {ms} ms earlier"),
                 ms => format!("Sound {} ms later", -ms),
             },
+            sync_auto: false,
+            kodi,
         };
         if let Some(Playback { props, .. }) = playback {
             let current_audio = props.currentaudiostream.and_then(|s| s.index);
@@ -575,7 +837,7 @@ impl AudioSheet {
             sheet.subtitles = props.subtitles.iter().map(|s| subtitle_choice(s, current_sub)).collect();
             sheet.subtitles_off = current_sub.is_none();
         }
-        Ok(sheet)
+        sheet
     }
 }
 
@@ -770,6 +1032,30 @@ mod tests {
         );
         assert_eq!(titles(&page.shows), ["Severance"]);
         assert!(page.shows[0].href.starts_with("addon/search?path="));
+    }
+
+    #[test]
+    fn home_cards_play_library_items_and_open_shows() {
+        let movie: Movie = serde_json::from_value(json!({ "movieid": 17, "title": "Holidate", "year": 2020,
+            "art": { "poster": "p.jpg", "landscape": "l.jpg" } })).unwrap();
+        let show: TvShow = serde_json::from_value(json!({ "tvshowid": 7, "title": "Cobra Kai" })).unwrap();
+        let episode: Episode = serde_json::from_value(json!({ "episodeid": 3, "title": "Pilot", "showtitle": "The Wire",
+            "season": 1, "episode": 2 })).unwrap();
+
+        let (movie, show, episode) = (AddonItem::from(movie), AddonItem::from(show), AddonItem::from(episode));
+        assert!(movie.plays && movie.href == "movies/17/play");
+        assert_eq!(movie.art.as_deref(), Some("art?src=l.jpg"), "landscape art first");
+        assert!(!show.plays && show.href == "shows/7");
+        assert!(episode.plays && episode.href == "episodes/3/play");
+        assert_eq!((episode.title.as_str(), episode.detail.as_str()), ("The Wire", "S1 · E2"));
+    }
+
+    #[test]
+    fn netflix_rows_keep_titles_but_not_menu_entries() {
+        let mut list = entries();
+        list.push(serde_json::from_value(json!({ "label": "Next page", "file": "plugin://plugin.video.netflix/directory/video_list/currentTitles/trendingNow/?page=2", "filetype": "directory", "type": "unknown" })).unwrap());
+
+        assert_eq!(titles(&netflix_cards(list)), ["Some Show", "Some Movie", "1. Pilot"]);
     }
 
     #[test]

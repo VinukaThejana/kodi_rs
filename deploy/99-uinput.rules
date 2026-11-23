@@ -1,0 +1,7 @@
+# kodi-remote's browser mode (src/browser.rs) types and points on the TV through virtual input
+# devices, and creating one needs /dev/uinput, which udev gives to root alone by default. This
+# lets the `input` group create them too; that group can already read every keyboard.
+#
+#   sudo install -m644 deploy/99-uinput.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger --name-match=uinput
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"

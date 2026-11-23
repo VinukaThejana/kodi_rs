@@ -58,6 +58,12 @@
           <i class="pad-dot" data-dir="down"></i>
           <i class="pad-dot" data-dir="left"></i>
           <span class="pad-glow"></span>
+          {#- Browser mode only (app.css): the trackpad's how-to and its scroll strip (app.js). -#}
+          <span class="pad-hint" aria-hidden="true">
+            <span class="with-touch">Drag to move · Tap to click<br>Two-finger tap to right-click</span>
+            <span class="with-mouse">Click to use your mouse on the TV<br>Esc gives it back</span>
+          </span>
+          <span class="pad-scroll" aria-hidden="true"><span>Scroll</span></span>
         </div>
 
         <div class="keys">
@@ -77,12 +83,13 @@
       <header class="library-head">
         {#- Library and Search share the #media pane; data-pane on .app says which one it holds,
             and app.js reloads it when Kodi is switched on, so it stops saying "Kodi is off". -#}
-        <h1><span class="pane-library">Library</span><span class="pane-search">Search</span></h1>
+        <h1><span class="pane-library"><span class="when-kodi">Library</span><span class="when-browser">Apple TV</span></span><span class="pane-search">Search</span></h1>
         <div class="segmented" role="tablist" aria-label="Library section">
-          <button role="tab" aria-selected="true" data-segment hx-get="movies" hx-target="#media">Movies</button>
+          <button role="tab" aria-selected="true" data-segment hx-get="home" hx-target="#media">Home</button>
+          <button role="tab" aria-selected="false" data-segment hx-get="movies" hx-target="#media">Movies</button>
           <button role="tab" aria-selected="false" data-segment hx-get="shows" hx-target="#media">TV Shows</button>
           <button role="tab" aria-selected="false" data-segment hx-get="addon/netflix" hx-target="#media" hx-indicator="#media">Netflix</button>
-          <button role="tab" aria-selected="false" data-segment hx-get="addon/appletv" hx-target="#media" hx-indicator="#media">Apple TV</button>
+          <button role="tab" aria-selected="false" data-segment hx-get="browser/apple-tv" hx-target="#media">Apple TV</button>
         </div>
       </header>
       <div id="media">
@@ -96,7 +103,7 @@
 
   <nav class="tabbar" aria-label="Views">
     <button data-view="remote" aria-pressed="true"><svg><use href="#i-remote"/></svg><span>Remote</span></button>
-    <button data-view="library" aria-pressed="false"><svg><use href="#i-film"/></svg><span>Library</span></button>
+    <button data-view="library" aria-pressed="false"><svg><use href="#i-film"/></svg><span><span class="when-kodi">Library</span><span class="when-browser">Apple TV</span></span></button>
     <button data-view="search" aria-pressed="false"><svg><use href="#i-search"/></svg><span>Search</span></button>
   </nav>
 
@@ -127,8 +134,12 @@
 
   <dialog id="power-sheet" class="sheet sheet-alert" aria-labelledby="power-title">
     <div class="alert-icon"><svg><use href="#i-power"/></svg></div>
-    <h2 id="power-title">Turn off Kodi?</h2>
-    <p>Playback stops and Kodi closes on the TV.</p>
+    <h2 id="power-title">Turn off?</h2>
+    <p>Playback stops and Kodi, or the browser, closes on the TV.</p>
+    {#- In the browser, the gentler way out comes first. -#}
+    <button class="alert-cancel alert-first browser-only" hx-post="browser/close" hx-disabled-elt="this" data-close-after>
+      <span class="when-idle">Back to Kodi</span><span class="when-busy">Starting Kodi…</span>
+    </button>
     <button class="alert-danger" hx-post="kodi/quit" hx-disabled-elt="this" data-close-after>
       <span class="when-idle">Turn Off</span><span class="when-busy">Turning off…</span>
     </button>

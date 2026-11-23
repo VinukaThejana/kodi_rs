@@ -17,6 +17,158 @@
   const post = (path, source = pad, values = {}) =>
     htmx.ajax("POST", path, { source, swap: "none", values });
 
+  // ── Trackpad (browser mode) ─────────────────────────────────────
+  // While the browser is on the TV (the status card's data-browser="true"), the pad drives its
+  // pointer: drag to move, tap to click, two fingers to scroll, a two-finger tap to right-click.
+  // These listeners are registered before the clickpad's below and stop them in that mode.
+
+  const inBrowser = () => document.querySelector('.status[data-browser="true"]') !== null;
+  const TAP_TRAVEL = 8; // px a finger may drift and still tap
+  const TAP_MS = 280;
+  const SCROLL = 3; // wheel units (120 per notch) per px of two-finger travel
+  const SCROLL_EDGE = 0.82; // a drag that starts right of this fraction of the pad scrolls
+  const fingers = new Map(); // pointerId → { x, y, t } at its last event
+  let gesture = null; // { start, travel, most } for the touch in progress
+  const pending = { move: [0, 0], scroll: [0, 0] };
+  const sending = { move: false, scroll: false };
+
+  /** Sends what has built up for `kind`, with one request in flight per kind, so a slow network
+   * gets fewer, larger steps instead of a growing backlog. */
+  function flush(kind) {
+    const [dx, dy] = pending[kind].map(Math.trunc);
+    if (sending[kind] || (dx === 0 && dy === 0)) return;
+    pending[kind] = [pending[kind][0] - dx, pending[kind][1] - dy];
+    sending[kind] = true;
+    fetch(`browser/${kind}`, { method: "POST", body: new URLSearchParams({ dx, dy }) })
+      .catch(() => {})
+      .finally(() => {
+        sending[kind] = false;
+        flush(kind);
+      });
+  }
+
+  pad.addEventListener("pointerdown", (e) => {
+    if (!inBrowser()) return;
+    e.stopImmediatePropagation();
+    // A mouse doesn't drag the pad: clicking it hands the mouse to the TV (mouse mode, below).
+    if (e.pointerType === "mouse") return mouseDown(e);
+    pad.setPointerCapture(e.pointerId);
+    fingers.set(e.pointerId, { x: e.clientX, y: e.clientY, t: e.timeStamp });
+    if (fingers.size === 1) {
+      const r = pad.getBoundingClientRect();
+      gesture = { start: e.timeStamp, travel: 0, most: 1, edge: e.clientX - r.left > r.width * SCROLL_EDGE };
+    }
+    else gesture.most = Math.max(gesture.most, fingers.size);
+    const p = point(e);
+    pad.style.setProperty("--x", `${p.x}px`);
+    pad.style.setProperty("--y", `${p.y}px`);
+    pad.classList.add("touching");
+  });
+
+  pad.addEventListener("pointermove", (e) => {
+    const last = fingers.get(e.pointerId);
+    if (!last) return;
+    e.stopImmediatePropagation();
+    const dx = e.clientX - last.x;
+    const dy = e.clientY - last.y;
+    const dist = Math.hypot(dx, dy);
+    fingers.set(e.pointerId, { x: e.clientX, y: e.clientY, t: e.timeStamp });
+    gesture.travel += dist;
+    if (fingers.size === 1 && gesture.edge) {
+      // The scroll strip: one finger scrolls, the page following it like two fingers would.
+      pending.scroll[1] += dy * SCROLL;
+      flush("scroll");
+    } else if (fingers.size >= 2) {
+      // Natural scrolling: the page follows the fingers. Each finger reports its own moves,
+      // so divide by the count to scroll by their average.
+      pending.scroll[0] += (-dx * SCROLL) / fingers.size;
+      pending.scroll[1] += (dy * SCROLL) / fingers.size;
+      flush("scroll");
+    } else {
+      // Pointer acceleration: slow drags are precise, fast flicks cross the screen.
+      const speed = dist / Math.max(1, e.timeStamp - last.t); // px per ms
+      const gain = 1.4 + Math.min(speed, 2.5) * 1.3;
+      pending.move[0] += dx * gain;
+      pending.move[1] += dy * gain;
+      flush("move");
+      const p = point(e);
+      pad.style.setProperty("--x", `${p.x}px`);
+      pad.style.setProperty("--y", `${p.y}px`);
+    }
+  });
+
+  function liftFinger(e, cancelled) {
+    if (!fingers.delete(e.pointerId)) return;
+    e.stopImmediatePropagation();
+    if (fingers.size > 0) return;
+    const tap = !cancelled && gesture.travel < TAP_TRAVEL && e.timeStamp - gesture.start < TAP_MS;
+    if (tap) {
+      fetch("browser/click", {
+        method: "POST",
+        body: new URLSearchParams({ button: gesture.most >= 2 ? "right" : "left" }),
+      }).catch(() => {});
+      flash("select");
+    }
+    gesture = null;
+    pad.classList.remove("touching");
+  }
+  pad.addEventListener("pointerup", (e) => liftFinger(e, false));
+  pad.addEventListener("pointercancel", (e) => liftFinger(e, true));
+
+  // ── Mouse mode (browser mode, laptop) ───────────────────────────
+  // Clicking the pad with a mouse locks the pointer to the page (Pointer Lock): from then on
+  // every movement anywhere moves the TV's pointer, clicks click there and the wheel scrolls,
+  // like a remote-desktop app. Esc gives the cursor back. Browsers only lock the pointer
+  // on a click, which is also what keeps clicks on the remote's own buttons apart.
+
+  const locked = () => document.pointerLockElement === pad;
+  const WHEEL = 1.2; // wheel units per pixel of wheel delta
+  let unlockedAt = 0;
+
+  function mouseDown(e) {
+    if (!locked()) {
+      pad.requestPointerLock()?.catch?.(() => {});
+      return;
+    }
+    const button = e.button === 2 ? "right" : e.button === 0 ? "left" : null;
+    if (!button) return;
+    fetch("browser/click", { method: "POST", body: new URLSearchParams({ button }) }).catch(() => {});
+    flash("select");
+  }
+
+  document.addEventListener("pointerlockchange", () => {
+    pad.toggleAttribute("data-captured", locked());
+    if (!locked()) unlockedAt = performance.now();
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!locked()) return;
+    pending.move[0] += e.movementX;
+    pending.move[1] += e.movementY;
+    flush("move");
+  });
+
+  document.addEventListener(
+    "wheel",
+    (e) => {
+      if (!locked()) return;
+      e.preventDefault();
+      // A wheel's deltaY is positive scrolling down; the TV's wheel axis is positive up.
+      const lines = e.deltaMode === WheelEvent.DOM_DELTA_LINE ? 40 : 1;
+      pending.scroll[0] += e.deltaX * lines * WHEEL;
+      pending.scroll[1] += -e.deltaY * lines * WHEEL;
+      flush("scroll");
+    },
+    { passive: false },
+  );
+
+  pad.addEventListener("contextmenu", (e) => inBrowser() && e.preventDefault());
+
+  // Leaving browser mode (Back to Kodi) gives the cursor back.
+  document.body.addEventListener("htmx:afterSettle", () => {
+    if (locked() && !inBrowser()) document.exitPointerLock();
+  });
+
   // ── Touch surface ───────────────────────────────────────────────
   // Tap the centre to select, tap an edge to move, or swipe. Long swipes
   // repeat a step every STEP px so you can glide through lists.
@@ -126,6 +278,8 @@
 
   document.addEventListener("keydown", (e) => {
     if (e.metaKey || e.ctrlKey || e.altKey || document.querySelector("dialog[open]")) return;
+    // The Esc that ends mouse mode is the browser's, not Back on the TV.
+    if (e.key === "Escape" && (locked() || performance.now() - unlockedAt < 500)) return;
     // Typing in a field (the library search) is text, not remote control.
     if (e.target instanceof Element && e.target.closest("input, textarea, select, [contenteditable]")) return;
     if ((e.key === "Enter" || e.key === " ") && e.target.closest("button")) return;
@@ -185,8 +339,14 @@
   const VIEWS = ["remote", "library", "search"];
   const wide = matchMedia("(min-width: 900px)");
 
-  /** Fills #media for the current pane: search, or the selected library segment. */
+  /** Fills #media for the current pane: search, or the selected library segment. While the
+   * browser is on the TV, both are Apple TV's instead: its pages, and a search that runs there. */
   function loadPane() {
+    if (inBrowser()) {
+      const path = app.dataset.pane === "library" ? "browser/apple-tv" : "browser/search";
+      htmx.ajax("GET", path, { source: document.getElementById("media"), target: "#media" });
+      return;
+    }
     const segment = app.dataset.pane === "library" ? document.querySelector(".segmented [aria-selected='true']") : null;
     htmx.ajax("GET", segment?.getAttribute("hx-get") ?? "search", {
       source: segment ?? document.getElementById("media"),
@@ -220,9 +380,19 @@
   // Kodi was just switched on: reload the pane so it stops saying "Kodi is off".
   document.body.addEventListener("launched", loadPane);
 
+  // Switching between Kodi and the browser changes what the panes hold.
+  let browserShown = inBrowser();
+  document.body.addEventListener("htmx:afterSettle", () => {
+    if (inBrowser() === browserShown) return;
+    browserShown = inBrowser();
+    loadPane();
+  });
+
   document.addEventListener("click", (e) => {
     const tab = e.target.closest(".tabbar [data-view]");
     if (tab) setView(tab.dataset.view);
+    // In the browser, the Search tab opens the site's own search on the TV.
+    if (tab?.dataset.view === "search" && inBrowser()) post("browser/go", tab, { page: "search" });
 
     const link = e.target.closest("[data-view-link]");
     if (link) setView(link.dataset.viewLink);
@@ -264,13 +434,17 @@
       toast(`Playing ${el.dataset.play}`);
     }
     if (el.matches("[data-close-after]")) el.closest("dialog")?.close();
+    if (el.matches("[data-on-tv]")) {
+      setView("remote");
+      toast(el.dataset.onTv);
+    }
   });
 
   // A link in the search bar plays on the TV instead of searching. This runs in the capture
   // phase, ahead of htmx's own submit handler on the form.
   document.addEventListener("submit", (e) => {
     const form = e.target.closest(".search-bar");
-    const input = form?.elements.q;
+    const input = form?.elements.q; // the browser's search field is "term": links don't apply
     if (!input || !/https?:\/\//.test(input.value)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -388,8 +562,14 @@
     try { return localStorage.getItem(LISTEN_KEY) === "1"; } catch { return false; }
   };
 
+  // The device's own audio output delay (speakers ~10 ms, Bluetooth headphones far more), for
+  // auto sync. Read from an AudioContext, which has to be created in a tap too.
+  let outputContext = null;
+  const outputMs = () => Math.round(((outputContext?.outputLatency || outputContext?.baseLatency) ?? 0) * 1000);
+
   /** Must run inside a tap: starts the (still empty) audio element so the stream can join it. */
   function primeAudio() {
+    try { outputContext ??= new AudioContext({ latencyHint: "interactive" }); } catch {}
     listenStream = new MediaStream();
     listenAudio.srcObject = listenStream;
     listenAudio.play().catch(() => {});
@@ -422,8 +602,8 @@
     peer?.close();
     const pc = new RTCPeerConnection();
     peer = pc;
-    // Leave the browser's adaptive jitter buffer alone: pinning it (jitterBufferTarget = 80)
-    // made playback choppy on the Mac.
+    // Leave the browser's adaptive jitter buffer alone. jitterBufferTarget can't shorten it:
+    // Safari ignores it (40 ms still gave ~210 ms) and Chrome treats it as a minimum.
     pc.addTransceiver("audio", { direction: "recvonly" });
     pc.ontrack = (e) => {
       for (const old of listenStream.getTracks()) listenStream.removeTrack(old);
@@ -455,16 +635,23 @@
   }
 
   // Temporary diagnostics: every 5s while listening, send the browser's WebRTC stats to the
-  // server log. Loss, jitter and concealment are only visible here, not on the PC.
+  // server log. Loss, jitter and concealment are only visible here, not on the PC. bufferMs is
+  // the jitter buffer over the last 5s; the stats only give a running total since the start.
+  let lastBuffer = null;
   setInterval(async () => {
     if (!peer || peer.connectionState !== "connected") return;
-    const report = { ua: navigator.userAgent.replace(/^.*\) /, "") };
+    const report = { ua: navigator.userAgent.replace(/^.*\) /, ""), outputMs: outputMs() };
     for (const s of (await peer.getStats()).values()) {
       if (s.type === "inbound-rtp" && s.kind === "audio") {
         Object.assign(report, {
           received: s.packetsReceived, lost: s.packetsLost, jitterMs: Math.round(s.jitter * 1000),
           concealedMs: Math.round((s.concealedSamples / 48000) * 1000), concealEvents: s.concealmentEvents,
-          bufferMs: s.jitterBufferEmittedCount ? Math.round((s.jitterBufferDelay / s.jitterBufferEmittedCount) * 1000) : null,
+          bufferMs: (() => {
+            const prev = lastBuffer;
+            lastBuffer = { delay: s.jitterBufferDelay, count: s.jitterBufferEmittedCount };
+            const count = s.jitterBufferEmittedCount - (prev?.count ?? 0);
+            return count > 0 ? Math.round(((s.jitterBufferDelay - (prev?.delay ?? 0)) / count) * 1000) : null;
+          })(),
           speedups: s.removedSamplesForAcceleration, slowdowns: s.insertedSamplesForDeceleration,
         });
       }
@@ -475,6 +662,12 @@
       }
     }
     fetch("debug/webrtc", { method: "POST", body: JSON.stringify(report) }).catch(() => {});
+    // Auto sync: how long after reaching this device the sound plays (half the round trip, the
+    // jitter buffer, the output). The server adds its own part and moves Kodi's sound earlier.
+    if (report.bufferMs != null && report.rttMs != null) {
+      const ms = report.bufferMs + Math.round(report.rttMs / 2) + outputMs();
+      fetch("listen/delay", { method: "POST", body: new URLSearchParams({ ms }) }).catch(() => {});
+    }
   }, 5000);
 
   /** Backs off 1s, 2s, 4s… up to 10s between attempts, for as long as listening is wanted. */

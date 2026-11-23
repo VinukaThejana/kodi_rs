@@ -11,6 +11,9 @@ and it behaves like an app.
   forward 30s, and stop.
 - **Library**: browse movies and TV shows with posters and resume points. Shows have
   seasons, episodes and a "next episode" button. Tap anything to play it on the TV.
+  **Home** has the rows of Kodi's home screen: Netflix's Continue Watching, My List,
+  Trending Now and Recently Added, plus the library's in-progress and new movies and shows.
+  A Netflix row appears only while that list is on the profile's Netflix home page.
 - **Audio menu**: switch audio track, subtitles and sound output (TV, speakers, …).
   Paired Bluetooth headphones are listed even when they aren't connected (say your
   phone has the AirPods); tapping one connects it and moves Kodi's sound there. Pair
@@ -21,6 +24,9 @@ and it behaves like an app.
   using, for example to listen on a laptop while watching the TV, with a **Sync**
   control to line the sound up with the picture.
 - **Turn Kodi on and off** from the remote (see [Turn On / Turn Off](#turn-on--turn-off)).
+- **Apple TV in the browser** (optional): Apple TV+ won't play in Kodi here, so the
+  Apple TV tab opens tv.apple.com full screen on the TV in Kodi's place, and the
+  remote's pad becomes a trackpad (see [Apple TV in the browser](#apple-tv-in-the-browser)).
 
 It's a small Rust server ([Axum](https://github.com/tokio-rs/axum)) that renders HTML
 for [htmx](https://htmx.org) and talks to Kodi over its JSON-RPC API. Everything it
@@ -35,11 +41,12 @@ serves, including CSS, JavaScript and icons, is compiled into one binary.
 5. [Optional: serve it under a path with nginx](#4-optional-serve-it-under-a-path-with-nginx)
 6. [Optional: Listen on this device](#5-optional-listen-on-this-device)
 7. [Turn On / Turn Off](#turn-on--turn-off)
-8. [Using it](#using-it)
-9. [Configuration](#configuration)
-10. [Troubleshooting](#troubleshooting)
-11. [Security](#security)
-12. [Development](#development)
+8. [Apple TV in the browser](#apple-tv-in-the-browser)
+9. [Using it](#using-it)
+10. [Configuration](#configuration)
+11. [Troubleshooting](#troubleshooting)
+12. [Security](#security)
+13. [Development](#development)
 
 ## Requirements
 
@@ -236,6 +243,42 @@ don't use Turn On. Everything else works the same. The command is in `launch()` 
 
 Turn On refuses to start a second Kodi if one is already running but its API isn't
 answering (see "Not Responding" under [Troubleshooting](#troubleshooting)).
+
+## Apple TV in the browser
+
+Apple's licence server refuses the Widevine module as Kodi loads it (status `-1002`), so the
+Apple TV add-on can't play Apple TV+ on a Linux box. The same module inside Chrome plays. So
+the **Apple TV** tab offers **Open Apple TV**, which closes Kodi and starts Chrome in kiosk
+mode on tv.apple.com, as the transient user unit `tv-browser`:
+
+```sh
+systemd-run --user --unit=tv-browser --collect -E LIBSEAT_BACKEND=noop \
+  cage -- google-chrome-stable --kiosk --ozone-platform=wayland https://tv.apple.com/
+```
+
+While it's open:
+
+- the pad is a **trackpad**: drag to move the pointer, tap to click, two fingers to scroll,
+  a two-finger tap to right-click;
+- the arrow keys, Select (Enter) and Play/Pause (Space) go to the page; **Back** is the
+  browser's Back, and the **TV** key loads Apple TV's home page;
+- the keyboard sheet types into the page and presses Enter;
+- volume and mute change the system volume (PipeWire), since Kodi isn't running.
+
+**Back to Kodi** on the remote closes the browser and Kodi starts again, as it does when
+Chrome closes any other way (Ctrl+Shift+Q on a keyboard). **Turn Off** closes the browser
+without starting Kodi. Chrome keeps its own profile in `~/.config/chrome-tv`, so you sign in
+to Apple once.
+
+It needs [cage](https://github.com/cage-kiosk/cage) and Google Chrome, and for the remote's
+keys and trackpad, write access to `/dev/uinput`:
+
+```sh
+sudo install -m644 deploy/99-uinput.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger --name-match=uinput
+```
+
+The rule gives `/dev/uinput` to the `input` group, which your user is in for Turn On.
 
 ## Using it
 

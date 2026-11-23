@@ -21,6 +21,10 @@ pub enum KodiError {
 
 pub type Result<T> = std::result::Result<T, KodiError>;
 
+/// The command that runs Kodi fullscreen on the TV (see `routes::launch`). It runs `kodi` rather
+/// than `kodi-standalone`, whose crash-restart loop revives Kodi without GPU access.
+pub const LAUNCH: [&str; 3] = ["kodi", "--standalone", "--windowing=gbm"];
+
 /// Time limit for calls that run add-on code, which fetches from the internet (Netflix takes
 /// a few seconds per page). Every other call uses the client's 4s default.
 const ADDON_TIMEOUT: Duration = Duration::from_secs(30);
@@ -231,6 +235,9 @@ pub struct TvShow {
 pub struct Episode {
     pub episodeid: i64,
     pub title: String,
+    /// Only filled by [`Kodi::picked_episodes`], which asks for it.
+    #[serde(default)]
+    pub showtitle: String,
     pub season: i64,
     pub episode: i64,
     #[serde(default)]
@@ -245,6 +252,38 @@ pub struct Episode {
 }
 
 const SHOW_PROPERTIES: [&str; 6] = ["title", "year", "art", "season", "episode", "watchedepisodes"];
+
+/// A selection from the library, like the smart playlists behind Kodi's home-screen rows.
+/// Each is capped at [`PICK_LIMIT`] items, as those playlists are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Pick {
+    /// Started but not finished, most recently played first.
+    InProgress,
+    /// Never played, most recently added first.
+    Unwatched,
+    /// Every item, most recently played first.
+    RecentlyPlayed,
+}
+
+const PICK_LIMIT: u32 = 50;
+
+impl Pick {
+    /// The `filter`, `sort` and `limits` params for a `VideoLibrary.Get*` call.
+    fn params(self) -> serde_json::Map<String, Value> {
+        let (filter, sort) = match self {
+            Self::InProgress => (Some(json!({ "field": "inprogress", "operator": "true", "value": "" })), "lastplayed"),
+            Self::Unwatched => (Some(json!({ "field": "playcount", "operator": "is", "value": "0" })), "dateadded"),
+            Self::RecentlyPlayed => (None, "lastplayed"),
+        };
+        let mut params = serde_json::Map::new();
+        if let Some(filter) = filter {
+            params.insert("filter".into(), filter);
+        }
+        params.insert("sort".into(), json!({ "method": sort, "order": "descending" }));
+        params.insert("limits".into(), json!({ "end": PICK_LIMIT }));
+        params
+    }
+}
 
 #[derive(Debug, Deserialize)]
 pub struct Resume {
@@ -468,6 +507,18 @@ impl Kodi {
         Ok(res.movies)
     }
 
+    pub async fn picked_movies(&self, pick: Pick) -> Result<Vec<Movie>> {
+        #[derive(Deserialize)]
+        struct GetMovies {
+            #[serde(default)]
+            movies: Vec<Movie>,
+        }
+        let mut params = pick.params();
+        params.insert("properties".into(), json!(["title", "year", "art", "resume"]));
+        let res: GetMovies = self.call("VideoLibrary.GetMovies", Value::Object(params)).await?;
+        Ok(res.movies)
+    }
+
     /// Starts a library movie, resuming where it was left off.
     pub async fn play_movie(&self, movie_id: i64) -> Result<()> {
         self.send("Player.Open", json!({ "item": { "movieid": movie_id }, "options": { "resume": true } }))
@@ -487,6 +538,34 @@ impl Kodi {
             )
             .await?;
         Ok(res.tvshows)
+    }
+
+    pub async fn picked_tv_shows(&self, pick: Pick) -> Result<Vec<TvShow>> {
+        #[derive(Deserialize)]
+        struct GetTvShows {
+            #[serde(default)]
+            tvshows: Vec<TvShow>,
+        }
+        let mut params = pick.params();
+        params.insert("properties".into(), json!(SHOW_PROPERTIES));
+        let res: GetTvShows = self.call("VideoLibrary.GetTVShows", Value::Object(params)).await?;
+        Ok(res.tvshows)
+    }
+
+    /// Episodes across every show, with [`Episode::showtitle`] filled in.
+    pub async fn picked_episodes(&self, pick: Pick) -> Result<Vec<Episode>> {
+        #[derive(Deserialize)]
+        struct GetEpisodes {
+            #[serde(default)]
+            episodes: Vec<Episode>,
+        }
+        let mut params = pick.params();
+        params.insert(
+            "properties".into(),
+            json!(["title", "showtitle", "season", "episode", "playcount", "runtime", "art", "resume"]),
+        );
+        let res: GetEpisodes = self.call("VideoLibrary.GetEpisodes", Value::Object(params)).await?;
+        Ok(res.episodes)
     }
 
     pub async fn tv_show(&self, tvshow_id: i64) -> Result<TvShow> {

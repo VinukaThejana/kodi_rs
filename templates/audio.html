@@ -41,10 +41,11 @@
       <span class="row-text"><span class="row-title">This device</span><span class="row-detail">Plays wherever this remote is open</span></span>
       <svg class="row-check"><use href="#i-check"/></svg>
     </button>
-    {% if listening %}
+    {% if listening && kodi %}
     <div class="row sync-row">
       <span class="row-text"><span class="row-title">Sync</span><span class="row-detail">{{ sync_label }}</span></span>
       <div class="stepper" hx-sync="this:queue all">
+        <button hx-post="listen/sync/auto" hx-target="#audio-body" aria-pressed="{{ sync_auto }}" aria-label="Sync by itself">Auto</button>
         <button hx-post="listen/sync" hx-target="#audio-body" name="step" value="1" aria-label="Play the sound earlier">Earlier</button>
         <button hx-post="listen/sync" hx-target="#audio-body" name="step" value="-1" aria-label="Play the sound later">Later</button>
       </div>
@@ -65,5 +66,6 @@
     </button>
     {% endfor %}
   </div>
-  {% if !playing %}<p class="group-note">Audio and subtitle tracks appear here while something is playing.</p>{% endif %}
+  {% if kodi && !playing %}<p class="group-note">Audio and subtitle tracks appear here while something is playing.</p>{% endif %}
+  {% if !kodi %}<p class="group-note">Sound from the browser goes to the system output picked here.</p>{% endif %}
 </section>

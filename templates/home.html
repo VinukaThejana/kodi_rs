@@ -1,0 +1,20 @@
+{% if !online %}
+<div class="empty">
+  <svg><use href="#i-power"/></svg>
+  <p>Kodi is off</p>
+  <span>Turn it on from the remote to see what's on.</span>
+</div>
+{% else %}
+{#- Each row fetches itself and replaces this placeholder; an empty row removes it. Home starts the
+    page trail (data-addon-home), so Back from a show opened here comes back here. -#}
+<div class="home" data-addon-url="home" data-addon-home>
+  {% for row in rows %}
+  <section class="shelf" hx-get="home/{{ row.slug() }}" hx-trigger="load" hx-swap="outerHTML">
+    <h2 class="shelf-title">{{ row.title() }}{% if row.is_netflix() %}<span class="shelf-source">Netflix</span>{% endif %}</h2>
+    <ul class="shelf-row" aria-hidden="true">
+      <li class="skeleton skeleton-wide"></li><li class="skeleton skeleton-wide"></li><li class="skeleton skeleton-wide"></li>
+    </ul>
+  </section>
+  {% endfor %}
+</div>
+{% endif %}
